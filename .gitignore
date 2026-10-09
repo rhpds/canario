@@ -1,3 +1,36 @@
-# Local design notes (not published)
+# Local design notes
 todo.md
 docs/plan.md
+
+# Binaries / build
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+Dockerfile.cross
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go
+go.work
+go.work.sum
+vendor/
+
+# Env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

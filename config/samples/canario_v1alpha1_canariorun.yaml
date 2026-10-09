@@ -1,0 +1,9 @@
+apiVersion: canario.rhpds.com/v1alpha1
+kind: CanarioRun
+metadata:
+  name: canariorun-sample
+spec:
+  type: guest
+  profile: small
+  workers: all
+  # storageClass: ocs-storagecluster-ceph-rbd

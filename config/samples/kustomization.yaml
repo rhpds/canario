@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- canario_v1alpha1_canariorun.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
