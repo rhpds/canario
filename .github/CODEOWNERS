@@ -1,0 +1,2 @@
+# Require @yordangit review for merges to protected branches (ruleset + code owners).
+* @yordangit
