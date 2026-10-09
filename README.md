@@ -20,7 +20,3 @@ API group: `canario.rhpds.com`
 ## License
 
 Apache License 2.0
-
-## Status
-
-Go / Operator SDK scaffold with `CanarioRun` → placeholder Job. Real guest probe payload next.
