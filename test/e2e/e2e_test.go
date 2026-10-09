@@ -31,7 +31,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "canario-system"
+const namespace = "canario-operator"
 
 // serviceAccountName created for the project
 const serviceAccountName = "canario-controller-manager"
