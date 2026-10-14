@@ -37,7 +37,7 @@ const (
 
 // CanarioRunSpec is the desired configuration for a one-shot canary run.
 type CanarioRunSpec struct {
-	// Type selects the canary experiment. "guest" creates a temporary VM probe.
+	// Type selects the canary experiment. "guest" creates a temporary guest VM.
 	// +kubebuilder:validation:Enum=guest
 	// +kubebuilder:default=guest
 	Type string `json:"type,omitempty"`
@@ -51,7 +51,7 @@ type CanarioRunSpec struct {
 	// +kubebuilder:default=all
 	Workers string `json:"workers,omitempty"`
 
-	// StorageClass for the probe VM disk. Empty uses the cluster default.
+	// StorageClass for the guest VM disk. Empty uses the cluster default.
 	StorageClass string `json:"storageClass,omitempty"`
 }
 

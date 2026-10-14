@@ -62,13 +62,13 @@ spec:
                 - default
                 type: string
               storageClass:
-                description: StorageClass for the probe VM disk. Empty uses the cluster
+                description: StorageClass for the guest VM disk. Empty uses the cluster
                   default.
                 type: string
               type:
                 default: guest
                 description: Type selects the canary experiment. "guest" creates a
-                  temporary VM probe.
+                  temporary guest VM.
                 enum:
                 - guest
                 type: string

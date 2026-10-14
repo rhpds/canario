@@ -19,12 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,19 +31,33 @@ import (
 	canariov1alpha1 "github.com/rhpds/canario/api/v1alpha1"
 )
 
+const virtUnavailableMessage = "OpenShift Virtualization not available (VirtualMachine API missing)"
+
 // CanarioRunReconciler reconciles CanarioRun objects.
 type CanarioRunReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	RESTMapper meta.RESTMapper
+
+	// VirtAvailable overrides API discovery when set (used by unit tests).
+	VirtAvailable func(ctx context.Context) (bool, error)
+
+	// SyncCioVM overrides CioVM ensure when set (used by unit tests).
+	SyncCioVM func(ctx context.Context, run *canariov1alpha1.CanarioRun) (cioVMStatus, error)
 }
 
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns/finalizers,verbs=update
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile advances a CanarioRun: Pending → Job → Running → Succeeded/Failed.
-// The Job is a placeholder (echo); the real guest probe image comes later.
+// Reconcile advances a CanarioRun: Pending → create CioVM → Running (suite later).
 func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -72,87 +85,73 @@ func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	job, err := r.ensureProbeJob(ctx, run)
+	if needsVirt(run) {
+		ok, err := r.virtAvailable(ctx)
+		if err != nil {
+			log.Error(err, "failed to check OpenShift Virtualization availability")
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			log.Info("failing CanarioRun: OpenShift Virtualization unavailable")
+			return ctrl.Result{}, r.setPhase(ctx, run, canariov1alpha1.PhaseFailed, virtUnavailableMessage)
+		}
+	}
+
+	status, err := r.syncCioVM(ctx, run)
 	if err != nil {
-		log.Error(err, "failed to ensure probe Job")
+		log.Error(err, "failed to sync CioVM")
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.syncStatusFromJob(ctx, run, job)
+	return r.syncStatusFromCioVM(ctx, run, status)
 }
 
-func (r *CanarioRunReconciler) ensureProbeJob(ctx context.Context, run *canariov1alpha1.CanarioRun) (*batchv1.Job, error) {
-	log := logf.FromContext(ctx)
-	jobName := probeJobName(run)
-
-	job := &batchv1.Job{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: jobName}, job)
-	if err == nil {
-		return job, nil
+func (r *CanarioRunReconciler) syncCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) (cioVMStatus, error) {
+	if r.SyncCioVM != nil {
+		return r.SyncCioVM(ctx, run)
 	}
-	if !apierrors.IsNotFound(err) {
-		return nil, err
-	}
-
-	backoff := int32(0)
-	job = &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: run.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "canario",
-				"app.kubernetes.io/component": "probe",
-				"canario.rhpds.com/run":       run.Name,
-			},
-		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoff,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/name":      "canario",
-						"app.kubernetes.io/component": "probe",
-						"canario.rhpds.com/run":       run.Name,
-					},
-				},
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{{
-						Name:  "probe",
-						Image: "registry.access.redhat.com/ubi9/ubi-minimal:latest",
-						Command: []string{
-							"/bin/sh", "-c",
-							fmt.Sprintf(
-								"echo 'canario placeholder type=%s profile=%s workers=%s'; sleep 5",
-								run.Spec.Type, run.Spec.Profile, run.Spec.Workers,
-							),
-						},
-					}},
-				},
-			},
-		},
-	}
-
-	if err := ctrl.SetControllerReference(run, job, r.Scheme); err != nil {
-		return nil, err
-	}
-	if err := r.Create(ctx, job); err != nil {
-		return nil, err
-	}
-	log.Info("created probe Job", "job", jobName)
-	return job, nil
+	return r.ensureCioVM(ctx, run)
 }
 
-func (r *CanarioRunReconciler) syncStatusFromJob(ctx context.Context, run *canariov1alpha1.CanarioRun, job *batchv1.Job) error {
-	switch {
-	case job.Status.Succeeded > 0:
-		return r.setPhase(ctx, run, canariov1alpha1.PhaseSucceeded, "probe Job completed")
-	case jobFailed(job):
-		return r.setPhase(ctx, run, canariov1alpha1.PhaseFailed, "probe Job failed")
-	case run.Status.Phase != canariov1alpha1.PhaseRunning:
-		return r.setPhase(ctx, run, canariov1alpha1.PhaseRunning, fmt.Sprintf("probe Job %s running", job.Name))
+func needsVirt(run *canariov1alpha1.CanarioRun) bool {
+	return run.Spec.Type == "" || run.Spec.Type == canariov1alpha1.RunTypeGuest
+}
+
+func (r *CanarioRunReconciler) virtAvailable(ctx context.Context) (bool, error) {
+	if r.VirtAvailable != nil {
+		return r.VirtAvailable(ctx)
+	}
+	if r.RESTMapper == nil {
+		return false, fmt.Errorf("RESTMapper not configured")
+	}
+	_, err := r.RESTMapper.RESTMapping(
+		schema.GroupKind{Group: "kubevirt.io", Kind: "VirtualMachine"},
+		"v1",
+	)
+	if err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *CanarioRunReconciler) syncStatusFromCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun, status cioVMStatus) (ctrl.Result, error) {
+	switch status.Phase {
+	case cioVMPhaseFailed:
+		return ctrl.Result{}, r.setPhase(ctx, run, canariov1alpha1.PhaseFailed, status.Message)
+	case cioVMPhaseReady:
+		// Suite / cleanup come next; keep Running while CioVM is up.
+		if err := r.setPhase(ctx, run, canariov1alpha1.PhaseRunning, status.Message); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	default:
-		return nil
+		if err := r.setPhase(ctx, run, canariov1alpha1.PhaseRunning, status.Message); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 }
 
@@ -165,31 +164,15 @@ func (r *CanarioRunReconciler) setPhase(ctx context.Context, run *canariov1alpha
 	return r.Status().Update(ctx, run)
 }
 
-func probeJobName(run *canariov1alpha1.CanarioRun) string {
-	return run.Name + "-probe"
-}
-
 func isTerminal(phase string) bool {
 	return phase == canariov1alpha1.PhaseSucceeded || phase == canariov1alpha1.PhaseFailed
-}
-
-func jobFailed(job *batchv1.Job) bool {
-	if job.Status.Failed > 0 {
-		return true
-	}
-	for _, c := range job.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }
 
 // SetupWithManager registers this controller with the manager.
 func (r *CanarioRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&canariov1alpha1.CanarioRun{}).
-		Owns(&batchv1.Job{}).
+		Owns(newVirtualMachineForWatch()).
 		Named("canariorun").
 		Complete(r)
 }

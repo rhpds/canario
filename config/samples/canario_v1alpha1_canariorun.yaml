@@ -6,4 +6,4 @@ spec:
   type: guest
   profile: small
   workers: all
-  # storageClass: ocs-storagecluster-ceph-rbd
+  # storageClass: ocs-external-storagecluster-ceph-rbd
