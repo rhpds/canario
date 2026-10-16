@@ -51,7 +51,7 @@ type CanarioRunReconciler struct {
 	// VirtAvailable overrides API discovery when set (used by unit tests).
 	VirtAvailable func(ctx context.Context) (bool, error)
 
-	// SyncCioVM overrides CioVM ensure when set (used by unit tests).
+	// SyncCioVM overrides CioVM ensure when set (used by unit tests; single-worker).
 	SyncCioVM func(ctx context.Context, run *canariov1alpha1.CanarioRun) (cioVMStatus, error)
 
 	// ReadSuite overrides guest-agent suite readout when set (used by unit tests).
@@ -74,7 +74,7 @@ type CanarioRunReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile: Pending → CioVM → suite results on status → Succeeded/Failed → cleanup CioVM.
+// Reconcile: Pending → staggered CioVMs → suite results on status.workers → Succeeded/Failed → cleanup.
 func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -119,20 +119,17 @@ func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	vmStatus, err := r.syncCioVM(ctx, run)
-	if err != nil {
-		log.Error(err, "failed to sync CioVM")
-		return ctrl.Result{}, err
-	}
-
-	return r.advanceFromCioVM(ctx, run, vmStatus)
-}
-
-func (r *CanarioRunReconciler) syncCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) (cioVMStatus, error) {
+	// Unit-test hook: single CioVM path.
 	if r.SyncCioVM != nil {
-		return r.SyncCioVM(ctx, run)
+		vmStatus, err := r.SyncCioVM(ctx, run)
+		if err != nil {
+			log.Error(err, "failed to sync CioVM")
+			return ctrl.Result{}, err
+		}
+		return r.advanceFromSingleCioVM(ctx, run, vmStatus)
 	}
-	return r.ensureCioVM(ctx, run)
+
+	return r.reconcileWorkers(ctx, run)
 }
 
 func needsVirt(run *canariov1alpha1.CanarioRun) bool {
@@ -159,34 +156,247 @@ func (r *CanarioRunReconciler) virtAvailable(ctx context.Context) (bool, error) 
 	return true, nil
 }
 
-func (r *CanarioRunReconciler) advanceFromCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun, vmStatus cioVMStatus) (ctrl.Result, error) {
+// reconcileWorkers fans out CioVMs (staggered create), collects per-worker suites, then cleans up.
+func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canariov1alpha1.CanarioRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	targets, err := r.resolveWorkerNodes(ctx, run)
+	if err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseFailed
+			s.Message = "workers: " + err.Error()
+		})
+	}
+
+	disks, err := r.resolveDataDisks(ctx, run)
+	if err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseFailed
+			s.Message = "storage: " + err.Error()
+		})
+	}
+
+	boot, err := resolveBootSource(run, r.GuestDefaults)
+	if err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseFailed
+			s.Message = "guestImage: " + err.Error()
+		})
+	}
+	if err := r.ensureBootSourceReady(ctx, boot); err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseFailed
+			s.Message = "guestImage: " + err.Error()
+		})
+	}
+
+	if err := r.ensureCioVMsStaggered(ctx, run, targets, disks, boot); err != nil {
+		log.Error(err, "failed to ensure CioVMs")
+		return ctrl.Result{}, err
+	}
+
+	byNode, err := r.cioVMsByNode(ctx, run)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	prevByNode := workerByNode(run.Status.Workers)
+	workers := make([]canariov1alpha1.WorkerResult, 0, len(targets))
+	allTerminal := true
+	anyFailed := false
+	var completion *metav1.Time
+
+	for _, node := range targets {
+		wr := prevByNode[node]
+		wr.NodeName = node
+
+		if isTerminal(wr.Phase) {
+			workers = append(workers, wr)
+			if wr.Phase == canariov1alpha1.PhaseFailed {
+				anyFailed = true
+			}
+			continue
+		}
+
+		vm := byNode[node]
+		if vm == nil {
+			wr.Phase = canariov1alpha1.PhasePending
+			wr.Message = "waiting to create CioVM"
+			allTerminal = false
+			workers = append(workers, wr)
+			continue
+		}
+
+		obs := observeCioVM(vm)
+		wr.CioVMName = obs.Name
+
+		switch obs.Phase {
+		case cioVMPhaseFailed:
+			wr.Phase = canariov1alpha1.PhaseFailed
+			wr.Message = obs.Message
+			anyFailed = true
+		case cioVMPhaseReady:
+			done, failed, snap, err := r.collectWorkerSuite(ctx, run.Namespace, obs.Name, node)
+			if err != nil {
+				log.Info("suite not readable yet", "node", node, "vm", obs.Name, "error", err.Error())
+				wr.Phase = canariov1alpha1.PhaseRunning
+				wr.SuiteStatus = "running"
+				wr.Message = "suite running in guest"
+				allTerminal = false
+			} else if !done {
+				wr.Phase = canariov1alpha1.PhaseRunning
+				wr.SuiteStatus = "running"
+				wr.Message = "suite running in guest"
+				allTerminal = false
+			} else {
+				wr.SuiteStatus = snap.Status
+				wr.Disks = snap.Disks
+				if failed {
+					wr.Phase = canariov1alpha1.PhaseFailed
+					wr.Message = "suite failed"
+					anyFailed = true
+				} else {
+					wr.Phase = canariov1alpha1.PhaseSucceeded
+					wr.Message = "suite succeeded"
+				}
+				if snap.Done != "" {
+					if t, err := time.Parse(time.RFC3339, snap.Done); err == nil {
+						ct := metav1.NewTime(t)
+						if completion == nil || ct.After(completion.Time) {
+							completion = &ct
+						}
+					}
+				}
+			}
+		default:
+			wr.Phase = canariov1alpha1.PhaseRunning
+			wr.Message = obs.Message
+			allTerminal = false
+		}
+		workers = append(workers, wr)
+	}
+
+	if !allTerminal {
+		if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseRunning
+			s.SuiteStatus = "running"
+			s.Message = fmt.Sprintf("experiment running (%d workers)", len(targets))
+			s.Workers = workers
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: suitePollInterval}, nil
+	}
+
+	phase := canariov1alpha1.PhaseSucceeded
+	suite := "succeeded"
+	msg := "all workers succeeded; cleaned up CioVMs"
+	if anyFailed {
+		phase = canariov1alpha1.PhaseFailed
+		suite = "failed"
+		msg = "one or more workers failed; cleaned up CioVMs"
+	}
+	if completion == nil {
+		now := metav1.Now()
+		completion = &now
+	}
+
+	if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+		s.Phase = phase
+		s.SuiteStatus = suite
+		s.Message = msg
+		s.Workers = workers
+		s.CompletionTime = completion
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.deleteCioVM(ctx, run); err != nil {
+		log.Error(err, "failed to delete CioVMs after suite")
+		return ctrl.Result{}, err
+	}
+	log.Info("experiment finished; CioVMs deleted", "phase", phase, "workers", len(workers))
+	return ctrl.Result{}, nil
+}
+
+func workerByNode(workers []canariov1alpha1.WorkerResult) map[string]canariov1alpha1.WorkerResult {
+	m := make(map[string]canariov1alpha1.WorkerResult, len(workers))
+	for _, w := range workers {
+		if w.NodeName != "" {
+			m[w.NodeName] = w
+		}
+	}
+	return m
+}
+
+// collectWorkerSuite returns (done, failed, snap, err). err means not readable yet.
+func (r *CanarioRunReconciler) collectWorkerSuite(ctx context.Context, namespace, vmName, nodeName string) (bool, bool, *suiteSnapshot, error) {
+	snap, err := r.readSuite(ctx, namespace, vmName)
+	if err != nil {
+		return false, false, nil, err
+	}
+	if snap.Done == "" && snap.Status != "succeeded" && snap.Status != "failed" {
+		return false, false, snap, nil
+	}
+	failed := snap.Status == "failed"
+	for i := range snap.Disks {
+		if snap.Disks[i].NodeName == "" {
+			snap.Disks[i].NodeName = nodeName
+		}
+		if snap.Disks[i].SuiteStatus == "failed" {
+			failed = true
+		}
+	}
+	return true, failed, snap, nil
+}
+
+// advanceFromSingleCioVM is the SyncCioVM unit-test path (one synthetic worker).
+func (r *CanarioRunReconciler) advanceFromSingleCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun, vmStatus cioVMStatus) (ctrl.Result, error) {
+	node := vmStatus.NodeName
+	if node == "" {
+		node = "worker"
+	}
+
 	switch vmStatus.Phase {
 	case cioVMPhaseFailed:
 		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 			s.Phase = canariov1alpha1.PhaseFailed
 			s.Message = vmStatus.Message
-			s.CioVMName = vmStatus.Name
-			s.NodeName = vmStatus.NodeName
+			s.Workers = []canariov1alpha1.WorkerResult{{
+				NodeName:  node,
+				CioVMName: vmStatus.Name,
+				Phase:     canariov1alpha1.PhaseFailed,
+				Message:   vmStatus.Message,
+			}}
 		})
 	case cioVMPhaseReady:
 		if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 			s.Phase = canariov1alpha1.PhaseRunning
-			s.CioVMName = vmStatus.Name
-			s.NodeName = vmStatus.NodeName
 			if s.SuiteStatus == "" {
 				s.SuiteStatus = "running"
 				s.Message = "suite running in guest"
 			}
+			s.Workers = []canariov1alpha1.WorkerResult{{
+				NodeName:    node,
+				CioVMName:   vmStatus.Name,
+				Phase:       canariov1alpha1.PhaseRunning,
+				SuiteStatus: "running",
+				Message:     "suite running in guest",
+			}}
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.collectSuiteAndCleanup(ctx, run, vmStatus.Name)
+		return r.collectSingleAndCleanup(ctx, run, vmStatus.Name, node)
 	default:
 		if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 			s.Phase = canariov1alpha1.PhaseRunning
 			s.Message = vmStatus.Message
-			s.CioVMName = vmStatus.Name
-			s.NodeName = vmStatus.NodeName
+			s.Workers = []canariov1alpha1.WorkerResult{{
+				NodeName:  node,
+				CioVMName: vmStatus.Name,
+				Phase:     canariov1alpha1.PhaseRunning,
+				Message:   vmStatus.Message,
+			}}
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -194,19 +404,18 @@ func (r *CanarioRunReconciler) advanceFromCioVM(ctx context.Context, run *canari
 	}
 }
 
-func (r *CanarioRunReconciler) collectSuiteAndCleanup(ctx context.Context, run *canariov1alpha1.CanarioRun, vmName string) (ctrl.Result, error) {
+func (r *CanarioRunReconciler) collectSingleAndCleanup(ctx context.Context, run *canariov1alpha1.CanarioRun, vmName, nodeName string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	if vmName == "" {
 		return ctrl.Result{RequeueAfter: suitePollInterval}, nil
 	}
 
-	snap, err := r.readSuite(ctx, run.Namespace, vmName)
+	done, failed, snap, err := r.collectWorkerSuite(ctx, run.Namespace, vmName, nodeName)
 	if err != nil {
 		log.Info("suite not readable yet", "error", err.Error())
 		return ctrl.Result{RequeueAfter: suitePollInterval}, nil
 	}
-
-	if snap.Done == "" && snap.Status != "succeeded" && snap.Status != "failed" {
+	if !done {
 		_ = r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 			s.Phase = canariov1alpha1.PhaseRunning
 			s.SuiteStatus = "running"
@@ -217,16 +426,13 @@ func (r *CanarioRunReconciler) collectSuiteAndCleanup(ctx context.Context, run *
 
 	phase := canariov1alpha1.PhaseSucceeded
 	msg := "suite succeeded; cleaned up CioVM"
-	if snap.Status == "failed" {
+	suite := snap.Status
+	workerPhase := canariov1alpha1.PhaseSucceeded
+	if failed {
 		phase = canariov1alpha1.PhaseFailed
 		msg = "suite failed; cleaned up CioVM"
-	}
-	for _, d := range snap.Disks {
-		if d.SuiteStatus == "failed" {
-			phase = canariov1alpha1.PhaseFailed
-			msg = "suite failed; cleaned up CioVM"
-			break
-		}
+		suite = "failed"
+		workerPhase = canariov1alpha1.PhaseFailed
 	}
 
 	completed := metav1.Now()
@@ -236,19 +442,19 @@ func (r *CanarioRunReconciler) collectSuiteAndCleanup(ctx context.Context, run *
 		}
 	}
 
-	disks := snap.Disks
-	for i := range disks {
-		if disks[i].NodeName == "" {
-			disks[i].NodeName = run.Status.NodeName
-		}
-	}
-
 	if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 		s.Phase = phase
 		s.Message = msg
-		s.SuiteStatus = snap.Status
-		s.Disks = disks
+		s.SuiteStatus = suite
 		s.CompletionTime = &completed
+		s.Workers = []canariov1alpha1.WorkerResult{{
+			NodeName:    nodeName,
+			CioVMName:   vmName,
+			Phase:       workerPhase,
+			SuiteStatus: suite,
+			Message:     msg,
+			Disks:       snap.Disks,
+		}}
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -257,12 +463,11 @@ func (r *CanarioRunReconciler) collectSuiteAndCleanup(ctx context.Context, run *
 		log.Error(err, "failed to delete CioVM after suite")
 		return ctrl.Result{}, err
 	}
-	log.Info("suite finished; CioVM deleted", "phase", phase, "suiteStatus", snap.Status, "disks", len(disks))
+	log.Info("suite finished; CioVM deleted", "phase", phase, "suiteStatus", suite)
 	return ctrl.Result{}, nil
 }
 
 func (r *CanarioRunReconciler) patchStatus(ctx context.Context, run *canariov1alpha1.CanarioRun, mutate func(*canariov1alpha1.CanarioRunStatus)) error {
-	// Re-fetch to reduce conflicts
 	latest := &canariov1alpha1.CanarioRun{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(run), latest); err != nil {
 		return err

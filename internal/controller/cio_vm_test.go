@@ -51,6 +51,51 @@ var _ = Describe("CioVM helpers", func() {
 		Expect(isWorkerNode(cp)).To(BeFalse())
 	})
 
+	It("aggregates multi-worker terminal phases", func() {
+		workers := []canariov1alpha1.WorkerResult{
+			{NodeName: "w1", Phase: canariov1alpha1.PhaseSucceeded},
+			{NodeName: "w2", Phase: canariov1alpha1.PhaseFailed},
+		}
+		by := workerByNode(workers)
+		Expect(by).To(HaveLen(2))
+		Expect(isTerminal(by["w1"].Phase)).To(BeTrue())
+		Expect(isTerminal(by["w2"].Phase)).To(BeTrue())
+	})
+
+	It("selects all vs busiest worker targets", func() {
+		names := []string{"w1", "w2", "w3"}
+		all, err := selectWorkerTargets(canariov1alpha1.WorkersAll, names)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all).To(Equal(names))
+
+		one, err := selectWorkerTargets(canariov1alpha1.WorkersBusiest, names)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(one).To(Equal([]string{"w1"}))
+
+		_, err = selectWorkerTargets(canariov1alpha1.WorkersAll, nil)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("stagger skips create while a CioVM is Pending", func() {
+		pending := &unstructured.Unstructured{Object: map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "vm-a",
+				"annotations": map[string]interface{}{annoCioNode: "w1"},
+			},
+			"status": map[string]interface{}{"printableStatus": "Starting"},
+		}}
+		Expect(observeCioVM(pending).Phase).To(Equal(cioVMPhasePending))
+
+		ready := &unstructured.Unstructured{Object: map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":        "vm-b",
+				"annotations": map[string]interface{}{annoCioNode: "w2"},
+			},
+			"status": map[string]interface{}{"ready": true},
+		}}
+		Expect(observeCioVM(ready).Phase).To(Equal(cioVMPhaseReady))
+	})
+
 	It("builds CioVM names as run-workernode-timestamp", func() {
 		now := time.Date(2026, 10, 16, 8, 3, 21, 0, time.UTC)
 		name := newCioVMName("nightly-ceph", "worker-cluster-2bzjd-1", now)

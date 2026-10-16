@@ -115,28 +115,44 @@ type DiskResult struct {
 	Message          string `json:"message,omitempty"`
 }
 
+// WorkerResult is the per-worker CioVM outcome for a CanarioRun.
+type WorkerResult struct {
+	// NodeName is the worker node.
+	NodeName string `json:"nodeName,omitempty"`
+
+	// CioVMName is the owned KubeVirt VirtualMachine on this node.
+	CioVMName string `json:"cioVMName,omitempty"`
+
+	// Phase is Pending, Running, Succeeded, or Failed for this worker.
+	Phase string `json:"phase,omitempty"`
+
+	// SuiteStatus is the in-guest suite status (running|succeeded|failed).
+	SuiteStatus string `json:"suiteStatus,omitempty"`
+
+	// Message is a human-readable detail for this worker.
+	Message string `json:"message,omitempty"`
+
+	// Disks are per-StorageClass suite results on this worker.
+	// +optional
+	Disks []DiskResult `json:"disks,omitempty"`
+}
+
 // CanarioRunStatus is the observed state of a CanarioRun.
 type CanarioRunStatus struct {
-	// Phase is Pending, Running, Succeeded, or Failed.
+	// Phase is Pending, Running, Succeeded, or Failed (aggregate over workers).
 	Phase string `json:"phase,omitempty"`
 
 	// Message is a human-readable detail for the current phase.
 	Message string `json:"message,omitempty"`
 
-	// CioVMName is the owned KubeVirt VirtualMachine name.
-	CioVMName string `json:"cioVMName,omitempty"`
-
-	// NodeName is the worker where the CioVM was placed.
-	NodeName string `json:"nodeName,omitempty"`
-
-	// SuiteStatus is the overall in-guest suite status (running|succeeded|failed).
+	// SuiteStatus is the overall suite status (running|succeeded|failed).
 	SuiteStatus string `json:"suiteStatus,omitempty"`
 
-	// Disks are per-StorageClass suite results.
+	// Workers holds per-worker CioVM results (source of truth for placement/disks).
 	// +optional
-	Disks []DiskResult `json:"disks,omitempty"`
+	Workers []WorkerResult `json:"workers,omitempty"`
 
-	// CompletionTime is when the suite finished (UTC).
+	// CompletionTime is when the experiment finished (UTC).
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 }
@@ -144,7 +160,6 @@ type CanarioRunStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.status.nodeName`
 // +kubebuilder:printcolumn:name="Suite",type=string,JSONPath=`.status.suiteStatus`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

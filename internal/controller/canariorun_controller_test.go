@@ -97,10 +97,11 @@ var _ = Describe("CanarioRun Controller", func() {
 			Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(canariov1alpha1.PhaseRunning))
 			Expect(updated.Status.SuiteStatus).To(Equal("running"))
-			Expect(updated.Status.NodeName).To(Equal("worker-1"))
+			Expect(updated.Status.Workers).To(HaveLen(1))
+			Expect(updated.Status.Workers[0].NodeName).To(Equal("worker-1"))
 		})
 
-		It("should set Succeeded with per-disk results and finish", func() {
+		It("should set Succeeded with per-worker disk results and finish", func() {
 			reconciler := &CanarioRunReconciler{
 				Client:        k8sClient,
 				Scheme:        k8sClient.Scheme(),
@@ -135,8 +136,9 @@ var _ = Describe("CanarioRun Controller", func() {
 			Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(canariov1alpha1.PhaseSucceeded))
 			Expect(updated.Status.SuiteStatus).To(Equal("succeeded"))
-			Expect(updated.Status.Disks).To(HaveLen(1))
-			Expect(updated.Status.Disks[0].FioSeqWriteBW).To(Equal("BW=320MiB/s"))
+			Expect(updated.Status.Workers).To(HaveLen(1))
+			Expect(updated.Status.Workers[0].Disks).To(HaveLen(1))
+			Expect(updated.Status.Workers[0].Disks[0].FioSeqWriteBW).To(Equal("BW=320MiB/s"))
 			Expect(updated.Status.CompletionTime).NotTo(BeNil())
 		})
 

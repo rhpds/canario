@@ -18,9 +18,6 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.nodeName
-      name: Node
-      type: string
     - jsonPath: .status.suiteStatus
       name: Suite
       type: string
@@ -120,65 +117,87 @@ spec:
           status:
             description: CanarioRunStatus is the observed state of a CanarioRun.
             properties:
-              cioVMName:
-                description: CioVMName is the owned KubeVirt VirtualMachine name.
-                type: string
               completionTime:
-                description: CompletionTime is when the suite finished (UTC).
+                description: CompletionTime is when the experiment finished (UTC).
                 format: date-time
                 type: string
-              disks:
-                description: Disks are per-StorageClass suite results.
-                items:
-                  description: DiskResult holds suite metrics for one attached data
-                    disk / StorageClass.
-                  properties:
-                    accessMode:
-                      type: string
-                    dataDev:
-                      type: string
-                    fileopsCreate1000Ms:
-                      type: string
-                    fileopsTarCreateMs:
-                      type: string
-                    fileopsTarExtractMs:
-                      type: string
-                    fioRandReadIOPS:
-                      type: string
-                    fioRandWriteIOPS:
-                      type: string
-                    fioSeqReadBW:
-                      type: string
-                    fioSeqWriteBW:
-                      type: string
-                    message:
-                      type: string
-                    nodeName:
-                      type: string
-                    provisioner:
-                      type: string
-                    sections:
-                      type: string
-                    storageClass:
-                      type: string
-                    suiteStatus:
-                      type: string
-                    volumeMode:
-                      type: string
-                  type: object
-                type: array
               message:
                 description: Message is a human-readable detail for the current phase.
                 type: string
-              nodeName:
-                description: NodeName is the worker where the CioVM was placed.
-                type: string
               phase:
-                description: Phase is Pending, Running, Succeeded, or Failed.
+                description: Phase is Pending, Running, Succeeded, or Failed (aggregate
+                  over workers).
                 type: string
               suiteStatus:
-                description: SuiteStatus is the overall in-guest suite status (running|succeeded|failed).
+                description: SuiteStatus is the overall suite status (running|succeeded|failed).
                 type: string
+              workers:
+                description: Workers holds per-worker CioVM results (source of truth
+                  for placement/disks).
+                items:
+                  description: WorkerResult is the per-worker CioVM outcome for a
+                    CanarioRun.
+                  properties:
+                    cioVMName:
+                      description: CioVMName is the owned KubeVirt VirtualMachine
+                        on this node.
+                      type: string
+                    disks:
+                      description: Disks are per-StorageClass suite results on this
+                        worker.
+                      items:
+                        description: DiskResult holds suite metrics for one attached
+                          data disk / StorageClass.
+                        properties:
+                          accessMode:
+                            type: string
+                          dataDev:
+                            type: string
+                          fileopsCreate1000Ms:
+                            type: string
+                          fileopsTarCreateMs:
+                            type: string
+                          fileopsTarExtractMs:
+                            type: string
+                          fioRandReadIOPS:
+                            type: string
+                          fioRandWriteIOPS:
+                            type: string
+                          fioSeqReadBW:
+                            type: string
+                          fioSeqWriteBW:
+                            type: string
+                          message:
+                            type: string
+                          nodeName:
+                            type: string
+                          provisioner:
+                            type: string
+                          sections:
+                            type: string
+                          storageClass:
+                            type: string
+                          suiteStatus:
+                            type: string
+                          volumeMode:
+                            type: string
+                        type: object
+                      type: array
+                    message:
+                      description: Message is a human-readable detail for this worker.
+                      type: string
+                    nodeName:
+                      description: NodeName is the worker node.
+                      type: string
+                    phase:
+                      description: Phase is Pending, Running, Succeeded, or Failed
+                        for this worker.
+                      type: string
+                    suiteStatus:
+                      description: SuiteStatus is the in-guest suite status (running|succeeded|failed).
+                      type: string
+                  type: object
+                type: array
             type: object
         type: object
     served: true

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -247,16 +248,22 @@ func (r *CanarioRunReconciler) listCioVMs(ctx context.Context, run *canariov1alp
 	return list.Items, nil
 }
 
-// getCioVM fetches one owned CioVM if present (first match).
-func (r *CanarioRunReconciler) getCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) (*unstructured.Unstructured, error) {
+// cioVMsByNode maps annoCioNode → owned CioVM.
+func (r *CanarioRunReconciler) cioVMsByNode(ctx context.Context, run *canariov1alpha1.CanarioRun) (map[string]*unstructured.Unstructured, error) {
 	items, err := r.listCioVMs(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	if len(items) == 0 {
-		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "kubevirt.io", Resource: "virtualmachines"}, run.Name)
+	out := make(map[string]*unstructured.Unstructured, len(items))
+	for i := range items {
+		vm := &items[i]
+		node := vm.GetAnnotations()[annoCioNode]
+		if node == "" {
+			continue
+		}
+		out[node] = vm
 	}
-	return &items[0], nil
+	return out, nil
 }
 
 func cloudInitSecretName(vmName string) string {
@@ -508,68 +515,79 @@ func observeCioVM(vm *unstructured.Unstructured) cioVMStatus {
 	return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM pending", Name: name, NodeName: node}
 }
 
-// ensureCioVM gets or creates the CanarioVirtualMachine and returns its observed status.
-func (r *CanarioRunReconciler) ensureCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) (cioVMStatus, error) {
-	vm, err := r.getCioVM(ctx, run)
-	if err == nil {
-		return observeCioVM(vm), nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return cioVMStatus{}, err
+// ensureCioVMsStaggered creates at most one missing CioVM per reconcile while any
+// existing CioVM is still Pending (not Ready/Failed). Ready/Failed workers do not block.
+func (r *CanarioRunReconciler) ensureCioVMsStaggered(ctx context.Context, run *canariov1alpha1.CanarioRun, targets []string, disks []resolvedDisk, boot bootSource) error {
+	byNode, err := r.cioVMsByNode(ctx, run)
+	if err != nil {
+		return err
 	}
 
-	nodeName, err := r.pickWorkerNode(ctx, run)
-	if err != nil {
-		return cioVMStatus{}, err
+	for _, vm := range byNode {
+		if observeCioVM(vm).Phase == cioVMPhasePending {
+			return nil
+		}
 	}
 
-	disks, err := r.resolveDataDisks(ctx, run)
-	if err != nil {
-		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "storage: " + err.Error()}, nil
+	for _, node := range targets {
+		if _, ok := byNode[node]; ok {
+			continue
+		}
+		if _, err := r.createCioVM(ctx, run, node, disks, boot); err != nil {
+			return err
+		}
+		return nil
 	}
-
-	boot, err := resolveBootSource(run, r.GuestDefaults)
-	if err != nil {
-		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "guestImage: " + err.Error()}, nil
-	}
-	if err := r.ensureBootSourceReady(ctx, boot); err != nil {
-		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "guestImage: " + err.Error()}, nil
-	}
-
-	vm, err = r.createCioVM(ctx, run, nodeName, disks, boot)
-	if err != nil {
-		return cioVMStatus{}, err
-	}
-	return observeCioVM(vm), nil
+	return nil
 }
 
-func (r *CanarioRunReconciler) pickWorkerNode(ctx context.Context, run *canariov1alpha1.CanarioRun) (string, error) {
+// resolveWorkerNodes returns the target worker node names for this Run.
+// workers=all → all schedulable workers (sorted); busiest → one node (first for now);
+// otherwise treat Spec.Workers as an explicit node name.
+func (r *CanarioRunReconciler) resolveWorkerNodes(ctx context.Context, run *canariov1alpha1.CanarioRun) ([]string, error) {
 	workers := run.Spec.Workers
 	if workers == "" {
 		workers = canariov1alpha1.WorkersAll
 	}
 
 	if workers != canariov1alpha1.WorkersAll && workers != canariov1alpha1.WorkersBusiest {
-		return workers, nil
+		return []string{workers}, nil
 	}
 
+	names, err := r.listWorkerNodeNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return selectWorkerTargets(workers, names)
+}
+
+// selectWorkerTargets applies workers=all|busiest to a sorted worker name list.
+func selectWorkerTargets(mode string, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no worker nodes found")
+	}
+	if mode == canariov1alpha1.WorkersBusiest {
+		// Load-based selection later; stable first worker for now.
+		return []string{names[0]}, nil
+	}
+	out := make([]string, len(names))
+	copy(out, names)
+	return out, nil
+}
+
+func (r *CanarioRunReconciler) listWorkerNodeNames(ctx context.Context) ([]string, error) {
 	nodeList := &corev1.NodeList{}
 	if err := r.List(ctx, nodeList); err != nil {
-		return "", fmt.Errorf("list nodes: %w", err)
+		return nil, fmt.Errorf("list nodes: %w", err)
 	}
-
 	var names []string
 	for i := range nodeList.Items {
 		if isWorkerNode(&nodeList.Items[i]) {
 			names = append(names, nodeList.Items[i].Name)
 		}
 	}
-	if len(names) == 0 {
-		return "", fmt.Errorf("no worker nodes found")
-	}
-
-	// v1 slice: one VM. all/busiest → first worker (load-based busiest later).
-	return names[0], nil
+	sort.Strings(names)
+	return names, nil
 }
 
 func isWorkerNode(node *corev1.Node) bool {
