@@ -20,3 +20,10 @@ data:
   # Storage: Ceph used/total when SC is ceph; else node ephemeral-storage requests/allocatable.
   CANARIO_NODE_USAGE_CEILING: "0.85"
   CANARIO_STORAGE_USAGE_CEILING: "0.75"
+  # Suite / network defaults (Run.spec.suite|network override these).
+  CANARIO_DEFAULT_SUITE_SECTIONS: "all"
+  CANARIO_DEFAULT_NETWORK_MODE: "auto"
+  CANARIO_DEFAULT_PING_TARGET: "1.1.1.1"
+  CANARIO_DEFAULT_DNS_NAME: "dns.google"
+  CANARIO_DEFAULT_DOWNLOAD_URL: "http://speedtest.tele2.net/1MB.zip"
+  CANARIO_DEFAULT_GIT_URL: ""

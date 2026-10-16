@@ -147,10 +147,12 @@ var _ = Describe("CioVM helpers", func() {
 			AccessMode:   corev1.ReadWriteOnce,
 			Provisioner:  "openshift-storage.rbd.csi.ceph.com",
 		}}
-		ud := cloudInitUserData("", "worker-1", disks)
+		cfg := resolveSuiteConfig(&canariov1alpha1.CanarioRun{}, OperatorSuiteDefaults{})
+		ud := cloudInitUserData(cfg, "worker-1", disks)
 		Expect(ud).To(HavePrefix("#cloud-config"))
 		Expect(ud).To(ContainSubstring("CANARIO_SUITE_SECTIONS=all"))
 		Expect(ud).To(ContainSubstring("CANARIO_NETWORK=auto"))
+		Expect(ud).To(ContainSubstring("CANARIO_DOWNLOAD_URL=http://speedtest.tele2.net/1MB.zip"))
 		Expect(ud).To(ContainSubstring("stress-ng"))
 		Expect(ud).To(ContainSubstring("CANARIO_DISKS_JSON_FILE=/etc/canario/disks.json"))
 		Expect(ud).To(ContainSubstring("ocs-rbd"))

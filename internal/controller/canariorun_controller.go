@@ -51,6 +51,9 @@ type CanarioRunReconciler struct {
 	// Thresholds are install-time node/storage usage ceilings (from CANARIO_*_USAGE_CEILING).
 	Thresholds OperatorThresholds
 
+	// SuiteDefaults are install-time suite/network defaults (from CANARIO_DEFAULT_*).
+	SuiteDefaults OperatorSuiteDefaults
+
 	// VirtAvailable overrides API discovery when set (used by unit tests).
 	VirtAvailable func(ctx context.Context) (bool, error)
 

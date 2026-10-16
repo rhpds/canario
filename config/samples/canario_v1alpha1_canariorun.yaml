@@ -15,3 +15,12 @@ spec:
   storage: list
   storageClasses:
     - ocs-external-storagecluster-ceph-rbd
+  # Optional — empty fields use operator ConfigMap / built-in defaults:
+  # suite:
+  #   sections: all
+  # network:
+  #   mode: auto
+  #   pingTarget: 1.1.1.1
+  #   dnsName: dns.google
+  #   downloadURL: http://speedtest.tele2.net/1MB.zip
+  #   gitURL: https://github.com/yordangit/ocp-virt-ux-bench.git

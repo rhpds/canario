@@ -77,6 +77,33 @@ spec:
                     description: Registry pulls via CDI (e.g. docker://quay.io/containerdisks/fedora:40).
                     type: string
                 type: object
+              network:
+                description: |-
+                  Network configures external ping/DNS/download/git checks. Optional;
+                  defaults from operator ConfigMap / built-in suite defaults.
+                properties:
+                  dnsName:
+                    description: DNSName is resolved for the DNS check (e.g. dns.google).
+                    type: string
+                  downloadURL:
+                    description: DownloadURL is fetched for the throughput check (~1MiB
+                      recommended).
+                    type: string
+                  gitURL:
+                    description: GitURL is cloned when the git section runs (empty
+                      skips git).
+                    type: string
+                  mode:
+                    description: Mode is auto (probe internet), on, or off.
+                    enum:
+                    - auto
+                    - "on"
+                    - "off"
+                    type: string
+                  pingTarget:
+                    description: PingTarget is the host for ICMP ping (e.g. 1.1.1.1).
+                    type: string
+                type: object
               profile:
                 default: small
                 description: 'Profile selects VM sizing: small (periodic default)
@@ -101,6 +128,17 @@ spec:
                 items:
                   type: string
                 type: array
+              suite:
+                description: Suite selects in-guest bench sections. Optional; defaults
+                  from operator ConfigMap / "all".
+                properties:
+                  sections:
+                    description: |-
+                      Sections is a comma-separated list or "all"
+                      (storage,fileops,responsive,packages,compile,cpu,memory,network,git).
+                      Empty uses operator default, then "all".
+                    type: string
+                type: object
               type:
                 default: guest
                 description: Type selects the canary experiment. "guest" creates a

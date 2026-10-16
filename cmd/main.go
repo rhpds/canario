@@ -204,6 +204,7 @@ func main() {
 
 	guestDefaults := controller.GuestDefaultsFromEnv()
 	thresholds := controller.ThresholdsFromEnv()
+	suiteDefaults := controller.SuiteDefaultsFromEnv()
 	setupLog.Info("guest boot defaults",
 		"dataSourceName", guestDefaults.DataSourceName,
 		"dataSourceNamespace", guestDefaults.DataSourceNamespace,
@@ -213,6 +214,11 @@ func main() {
 		"nodeUsageCeiling", thresholds.NodeUsageCeiling,
 		"storageUsageCeiling", thresholds.StorageUsageCeiling,
 	)
+	setupLog.Info("suite defaults",
+		"sections", suiteDefaults.Sections,
+		"networkMode", suiteDefaults.NetworkMode,
+		"downloadURL", suiteDefaults.DownloadURL,
+	)
 
 	if err := (&controller.CanarioRunReconciler{
 		Client:        mgr.GetClient(),
@@ -221,6 +227,7 @@ func main() {
 		Config:        mgr.GetConfig(),
 		GuestDefaults: guestDefaults,
 		Thresholds:    thresholds,
+		SuiteDefaults: suiteDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CanarioRun")
 		os.Exit(1)

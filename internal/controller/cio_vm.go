@@ -202,14 +202,8 @@ func disksJSON(disks []resolvedDisk) string {
 	return string(b)
 }
 
-// defaultSuiteSections runs the full modular suite (network auto-skips offline).
-const defaultSuiteSections = "all"
-
 // cloudInitUserData installs tools, drops the suite, and auto-runs selected sections.
-func cloudInitUserData(sections, nodeName string, disks []resolvedDisk) string {
-	if sections == "" {
-		sections = defaultSuiteSections
-	}
+func cloudInitUserData(cfg resolvedSuiteConfig, nodeName string, disks []resolvedDisk) string {
 	suite := strings.TrimSpace(suitepayload.SuiteSH) + "\n"
 	dj := disksJSON(disks)
 	return fmt.Sprintf(`#cloud-config
@@ -232,7 +226,11 @@ write_files:
     permissions: '0644'
     content: |
       CANARIO_SUITE_SECTIONS=%s
-      CANARIO_NETWORK=auto
+      CANARIO_NETWORK=%s
+      CANARIO_PING_TARGET=%s
+      CANARIO_DNS_NAME=%s
+      CANARIO_DOWNLOAD_URL=%s
+      CANARIO_GIT_URL=%s
       CANARIO_NODE_NAME=%s
       CANARIO_DISKS_JSON_FILE=/etc/canario/disks.json
       CANARIO_DATA_MOUNT=/mnt/canario-data
@@ -243,7 +241,9 @@ write_files:
 %s
 runcmd:
   - [ bash, -lc, "set -a; source /etc/canario/env; /usr/local/bin/canario-suite >>/var/log/canario-suite.log 2>&1" ]
-`, indentYAML(dj, 6), sections, nodeName, indentYAML(suite, 6))
+`, indentYAML(dj, 6),
+		cfg.Sections, cfg.NetworkMode, cfg.PingTarget, cfg.DNSName, cfg.DownloadURL, cfg.GitURL,
+		nodeName, indentYAML(suite, 6))
 }
 
 // listCioVMs returns CioVMs owned by this CanarioRun (by label).
@@ -283,7 +283,8 @@ func cloudInitSecretName(vmName string) string {
 }
 
 // ensureCloudInitSecret stores userdata in a Secret (KubeVirt inline userdata max 2048 bytes).
-func (r *CanarioRunReconciler) ensureCloudInitSecret(ctx context.Context, run *canariov1alpha1.CanarioRun, vmName, sections, nodeName string, disks []resolvedDisk) (string, error) {
+func (r *CanarioRunReconciler) ensureCloudInitSecret(ctx context.Context, run *canariov1alpha1.CanarioRun, vmName, nodeName string, disks []resolvedDisk) (string, error) {
+	cfg := resolveSuiteConfig(run, r.SuiteDefaults)
 	name := cloudInitSecretName(vmName)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -297,7 +298,7 @@ func (r *CanarioRunReconciler) ensureCloudInitSecret(ctx context.Context, run *c
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"userdata": []byte(cloudInitUserData(sections, nodeName, disks)),
+			"userdata": []byte(cloudInitUserData(cfg, nodeName, disks)),
 		},
 	}
 	if err := ctrl.SetControllerReference(run, secret, r.Scheme); err != nil {
@@ -317,7 +318,7 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 	cpu, memory, diskSize := profileResources(run.Spec.Profile)
 	vmName := newCioVMName(run.Name, nodeName, time.Now())
 
-	secretName, err := r.ensureCloudInitSecret(ctx, run, vmName, defaultSuiteSections, nodeName, disks)
+	secretName, err := r.ensureCloudInitSecret(ctx, run, vmName, nodeName, disks)
 	if err != nil {
 		return nil, fmt.Errorf("cloud-init secret: %w", err)
 	}

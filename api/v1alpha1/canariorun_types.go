@@ -32,6 +32,10 @@ const (
 	StorageDefault = "default"
 	StorageList    = "list"
 
+	NetworkAuto = "auto"
+	NetworkOn   = "on"
+	NetworkOff  = "off"
+
 	PhasePending   = "Pending"
 	PhaseRunning   = "Running"
 	PhaseSucceeded = "Succeeded"
@@ -59,6 +63,40 @@ type GuestImage struct {
 	// Registry pulls via CDI (e.g. docker://quay.io/containerdisks/fedora:40).
 	// +optional
 	Registry string `json:"registry,omitempty"`
+}
+
+// SuiteSpec selects which in-guest bench sections to run.
+type SuiteSpec struct {
+	// Sections is a comma-separated list or "all"
+	// (storage,fileops,responsive,packages,compile,cpu,memory,network,git).
+	// Empty uses operator default, then "all".
+	// +optional
+	Sections string `json:"sections,omitempty"`
+}
+
+// NetworkSpec configures external network / git checks inside the guest.
+// Empty fields fall back to operator ConfigMap defaults, then built-in suite defaults.
+type NetworkSpec struct {
+	// Mode is auto (probe internet), on, or off.
+	// +kubebuilder:validation:Enum=auto;on;off
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// PingTarget is the host for ICMP ping (e.g. 1.1.1.1).
+	// +optional
+	PingTarget string `json:"pingTarget,omitempty"`
+
+	// DNSName is resolved for the DNS check (e.g. dns.google).
+	// +optional
+	DNSName string `json:"dnsName,omitempty"`
+
+	// DownloadURL is fetched for the throughput check (~1MiB recommended).
+	// +optional
+	DownloadURL string `json:"downloadURL,omitempty"`
+
+	// GitURL is cloned when the git section runs (empty skips git).
+	// +optional
+	GitURL string `json:"gitURL,omitempty"`
 }
 
 // CanarioRunSpec is the desired configuration for a one-shot canary run.
@@ -93,6 +131,15 @@ type CanarioRunSpec struct {
 	// (one guest data disk per entry).
 	// +optional
 	StorageClasses []string `json:"storageClasses,omitempty"`
+
+	// Suite selects in-guest bench sections. Optional; defaults from operator ConfigMap / "all".
+	// +optional
+	Suite *SuiteSpec `json:"suite,omitempty"`
+
+	// Network configures external ping/DNS/download/git checks. Optional;
+	// defaults from operator ConfigMap / built-in suite defaults.
+	// +optional
+	Network *NetworkSpec `json:"network,omitempty"`
 }
 
 // DiskResult holds suite metrics for one attached data disk / StorageClass
