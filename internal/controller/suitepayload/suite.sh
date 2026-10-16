@@ -22,7 +22,8 @@ STRESS_TIMEOUT="${CANARIO_STRESS_TIMEOUT:-15}"
 NETWORK_MODE="${CANARIO_NETWORK:-auto}"
 PING_TARGET="${CANARIO_PING_TARGET:-1.1.1.1}"
 DNS_NAME="${CANARIO_DNS_NAME:-dns.google}"
-DOWNLOAD_URL="${CANARIO_DOWNLOAD_URL:-https://fedoraproject.org/static/hotspot.txt}"
+# ~1MiB — large enough for a real Mbps sample (2-byte hotspot files always read as 0.00).
+DOWNLOAD_URL="${CANARIO_DOWNLOAD_URL:-http://speedtest.tele2.net/1MB.zip}"
 GIT_URL="${CANARIO_GIT_URL:-}"
 DISKS_JSON="${CANARIO_DISKS_JSON:-}"
 if [[ -z "$DISKS_JSON" && -n "${CANARIO_DISKS_JSON_FILE:-}" && -f "${CANARIO_DISKS_JSON_FILE}" ]]; then
@@ -61,6 +62,9 @@ probe_internet() {
 		return 0
 	fi
 	if command -v curl >/dev/null 2>&1; then
+		# Tiny connectivity probe (not the throughput URL).
+		curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null \
+			"https://fedoraproject.org/static/hotspot.txt" 2>/dev/null && return 0
 		curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null "$DOWNLOAD_URL" 2>/dev/null && return 0
 	fi
 	return 1
@@ -314,10 +318,10 @@ run_network() {
 		http_code=$(echo "$out" | awk '{print $3}')
 		GUEST[net_download_mbps]=$(awk "BEGIN{printf \"%.2f\", ${speed_bps:-0}/1048576}" 2>/dev/null || echo "0.00")
 		GUEST[net_ttfb_ms]=$(echo "$out" | awk '{printf "%.0f", $2*1000}' 2>/dev/null || echo "0")
-		if [[ "${GUEST[net_download_mbps]}" == "0.00" || "$http_code" == "000" ]]; then
-			GUEST[net_download_status]=failed
-		else
+		if [[ "$http_code" == "200" ]]; then
 			GUEST[net_download_status]=ok
+		else
+			GUEST[net_download_status]=failed
 		fi
 	else
 		GUEST[net_download_status]=missing
