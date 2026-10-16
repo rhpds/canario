@@ -20,7 +20,7 @@ package suitepayload
 
 import _ "embed"
 
-// SuiteSH is the default in-guest suite (storage/fileops today; more sections later).
+// SuiteSH is the embedded in-guest suite (modular CANARIO_SUITE_SECTIONS).
 //
 //go:embed suite.sh
 var SuiteSH string

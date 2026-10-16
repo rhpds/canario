@@ -255,6 +255,7 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 				allTerminal = false
 			} else {
 				wr.SuiteStatus = snap.Status
+				wr.Guest = snap.Guest
 				wr.Disks = snap.Disks
 				if failed {
 					wr.Phase = canariov1alpha1.PhaseFailed
@@ -462,6 +463,7 @@ func (r *CanarioRunReconciler) collectSingleAndCleanup(ctx context.Context, run 
 			Phase:       workerPhase,
 			SuiteStatus: suite,
 			Message:     msg,
+			Guest:       snap.Guest,
 			Disks:       snap.Disks,
 		}}
 	}); err != nil {

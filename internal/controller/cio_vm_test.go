@@ -137,6 +137,8 @@ var _ = Describe("CioVM helpers", func() {
 
 	It("embeds a modular suite script with disks.json", func() {
 		Expect(suitepayload.SuiteSH).To(ContainSubstring("run_one_disk"))
+		Expect(suitepayload.SuiteSH).To(ContainSubstring("run_guest_sections"))
+		Expect(suitepayload.SuiteSH).To(ContainSubstring("probe_internet"))
 		Expect(suitepayload.SuiteSH).To(ContainSubstring("CANARIO_SUITE_SECTIONS"))
 		disks := []resolvedDisk{{
 			StorageClass: "ocs-rbd",
@@ -145,9 +147,11 @@ var _ = Describe("CioVM helpers", func() {
 			AccessMode:   corev1.ReadWriteOnce,
 			Provisioner:  "openshift-storage.rbd.csi.ceph.com",
 		}}
-		ud := cloudInitUserData("storage,fileops", "worker-1", disks)
+		ud := cloudInitUserData("", "worker-1", disks)
 		Expect(ud).To(HavePrefix("#cloud-config"))
-		Expect(ud).To(ContainSubstring("CANARIO_SUITE_SECTIONS=storage,fileops"))
+		Expect(ud).To(ContainSubstring("CANARIO_SUITE_SECTIONS=all"))
+		Expect(ud).To(ContainSubstring("CANARIO_NETWORK=auto"))
+		Expect(ud).To(ContainSubstring("stress-ng"))
 		Expect(ud).To(ContainSubstring("CANARIO_DISKS_JSON_FILE=/etc/canario/disks.json"))
 		Expect(ud).To(ContainSubstring("ocs-rbd"))
 		Expect(ud).To(ContainSubstring("/dev/vdb"))

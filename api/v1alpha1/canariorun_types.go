@@ -95,7 +95,8 @@ type CanarioRunSpec struct {
 	StorageClasses []string `json:"storageClasses,omitempty"`
 }
 
-// DiskResult holds suite metrics for one attached data disk / StorageClass.
+// DiskResult holds suite metrics for one attached data disk / StorageClass
+// (storage + fileops sections).
 type DiskResult struct {
 	StorageClass     string `json:"storageClass,omitempty"`
 	DataDev          string `json:"dataDev,omitempty"`
@@ -115,6 +116,30 @@ type DiskResult struct {
 	Message          string `json:"message,omitempty"`
 }
 
+// GuestResult holds once-per-VM suite metrics (responsive, packages, compile,
+// cpu, memory, network, git). Network/git may be status "skipped" without internet.
+type GuestResult struct {
+	CmdLsEtcMs         string `json:"cmdLsEtcMs,omitempty"`
+	CmdFindConfMs      string `json:"cmdFindConfMs,omitempty"`
+	CmdPsMs            string `json:"cmdPsMs,omitempty"`
+	DnfInstallMs       string `json:"dnfInstallMs,omitempty"`
+	DnfInstallStatus   string `json:"dnfInstallStatus,omitempty"`
+	CompileGccMs       string `json:"compileGccMs,omitempty"`
+	CompileRunMs       string `json:"compileRunMs,omitempty"`
+	CPUMatrixBogoOps   string `json:"cpuMatrixBogoOps,omitempty"`
+	MemMemcpyBogoOps   string `json:"memMemcpyBogoOps,omitempty"`
+	NetworkStatus      string `json:"networkStatus,omitempty"` // ok|failed|skipped
+	NetPingAvgMs       string `json:"netPingAvgMs,omitempty"`
+	NetPingStatus      string `json:"netPingStatus,omitempty"`
+	NetDNSMs           string `json:"netDnsMs,omitempty"`
+	NetDNSStatus       string `json:"netDnsStatus,omitempty"`
+	NetDownloadMbps    string `json:"netDownloadMbps,omitempty"`
+	NetTTFBMs          string `json:"netTtfbMs,omitempty"`
+	NetDownloadStatus  string `json:"netDownloadStatus,omitempty"`
+	GitCloneMs         string `json:"gitCloneMs,omitempty"`
+	GitCloneStatus     string `json:"gitCloneStatus,omitempty"`
+}
+
 // WorkerResult is the per-worker CioVM outcome for a CanarioRun.
 type WorkerResult struct {
 	// NodeName is the worker node.
@@ -131,6 +156,10 @@ type WorkerResult struct {
 
 	// Message is a human-readable detail for this worker.
 	Message string `json:"message,omitempty"`
+
+	// Guest is once-per-VM suite metrics.
+	// +optional
+	Guest *GuestResult `json:"guest,omitempty"`
 
 	// Disks are per-StorageClass suite results on this worker.
 	// +optional

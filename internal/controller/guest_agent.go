@@ -39,15 +39,39 @@ import (
 type suiteSnapshot struct {
 	Status  string // running|succeeded|failed|""
 	Done    string // RFC3339 or empty if not finished
+	Guest   *canariov1alpha1.GuestResult
 	Disks   []canariov1alpha1.DiskResult
 	RawJSON string
 }
 
 // guestResultsFile is JSON written by suite.sh (snake_case keys).
 type guestResultsFile struct {
-	Sections string            `json:"sections"`
-	NodeName string            `json:"node_name"`
-	Disks    []guestDiskResult `json:"disks"`
+	Sections string              `json:"sections"`
+	NodeName string              `json:"node_name"`
+	Guest    *guestGuestResult   `json:"guest"`
+	Disks    []guestDiskResult   `json:"disks"`
+}
+
+type guestGuestResult struct {
+	CmdLsEtcMs        string `json:"cmd_ls_etc_ms"`
+	CmdFindConfMs     string `json:"cmd_find_conf_ms"`
+	CmdPsMs           string `json:"cmd_ps_ms"`
+	DnfInstallMs      string `json:"dnf_install_ms"`
+	DnfInstallStatus  string `json:"dnf_install_status"`
+	CompileGccMs      string `json:"compile_gcc_ms"`
+	CompileRunMs      string `json:"compile_run_ms"`
+	CPUMatrixBogoOps  string `json:"cpu_matrix_bogo_ops"`
+	MemMemcpyBogoOps  string `json:"mem_memcpy_bogo_ops"`
+	NetworkStatus     string `json:"network_status"`
+	NetPingAvgMs      string `json:"net_ping_avg_ms"`
+	NetPingStatus     string `json:"net_ping_status"`
+	NetDNSMs          string `json:"net_dns_ms"`
+	NetDNSStatus      string `json:"net_dns_status"`
+	NetDownloadMbps   string `json:"net_download_mbps"`
+	NetTTFBMs         string `json:"net_ttfb_ms"`
+	NetDownloadStatus string `json:"net_download_status"`
+	GitCloneMs        string `json:"git_clone_ms"`
+	GitCloneStatus    string `json:"git_clone_status"`
 }
 
 type guestDiskResult struct {
@@ -67,6 +91,33 @@ type guestDiskResult struct {
 	FileopsTarCreateMs  string `json:"fileops_tar_create_ms"`
 	FileopsTarExtractMs string `json:"fileops_tar_extract_ms"`
 	Message             string `json:"message"`
+}
+
+func mapGuestResult(g *guestGuestResult) *canariov1alpha1.GuestResult {
+	if g == nil {
+		return nil
+	}
+	return &canariov1alpha1.GuestResult{
+		CmdLsEtcMs:        g.CmdLsEtcMs,
+		CmdFindConfMs:     g.CmdFindConfMs,
+		CmdPsMs:           g.CmdPsMs,
+		DnfInstallMs:      g.DnfInstallMs,
+		DnfInstallStatus:  g.DnfInstallStatus,
+		CompileGccMs:      g.CompileGccMs,
+		CompileRunMs:      g.CompileRunMs,
+		CPUMatrixBogoOps:  g.CPUMatrixBogoOps,
+		MemMemcpyBogoOps:  g.MemMemcpyBogoOps,
+		NetworkStatus:     g.NetworkStatus,
+		NetPingAvgMs:      g.NetPingAvgMs,
+		NetPingStatus:     g.NetPingStatus,
+		NetDNSMs:          g.NetDNSMs,
+		NetDNSStatus:      g.NetDNSStatus,
+		NetDownloadMbps:   g.NetDownloadMbps,
+		NetTTFBMs:         g.NetTTFBMs,
+		NetDownloadStatus: g.NetDownloadStatus,
+		GitCloneMs:        g.GitCloneMs,
+		GitCloneStatus:    g.GitCloneStatus,
+	}
 }
 
 func (r *CanarioRunReconciler) readSuite(ctx context.Context, namespace, vmName string) (*suiteSnapshot, error) {
@@ -98,6 +149,7 @@ func (r *CanarioRunReconciler) readSuiteViaGuestAgent(ctx context.Context, names
 			if err := json.Unmarshal([]byte(raw), &gr); err != nil {
 				return snap, fmt.Errorf("parse results.json: %w", err)
 			}
+			snap.Guest = mapGuestResult(gr.Guest)
 			for _, d := range gr.Disks {
 				sections := d.Sections
 				if sections == "" {

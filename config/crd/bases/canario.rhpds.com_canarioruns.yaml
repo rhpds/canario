@@ -146,8 +146,9 @@ spec:
                       description: Disks are per-StorageClass suite results on this
                         worker.
                       items:
-                        description: DiskResult holds suite metrics for one attached
-                          data disk / StorageClass.
+                        description: |-
+                          DiskResult holds suite metrics for one attached data disk / StorageClass
+                          (storage + fileops sections).
                         properties:
                           accessMode:
                             type: string
@@ -183,6 +184,48 @@ spec:
                             type: string
                         type: object
                       type: array
+                    guest:
+                      description: Guest is once-per-VM suite metrics.
+                      properties:
+                        cmdFindConfMs:
+                          type: string
+                        cmdLsEtcMs:
+                          type: string
+                        cmdPsMs:
+                          type: string
+                        compileGccMs:
+                          type: string
+                        compileRunMs:
+                          type: string
+                        cpuMatrixBogoOps:
+                          type: string
+                        dnfInstallMs:
+                          type: string
+                        dnfInstallStatus:
+                          type: string
+                        gitCloneMs:
+                          type: string
+                        gitCloneStatus:
+                          type: string
+                        memMemcpyBogoOps:
+                          type: string
+                        netDnsMs:
+                          type: string
+                        netDnsStatus:
+                          type: string
+                        netDownloadMbps:
+                          type: string
+                        netDownloadStatus:
+                          type: string
+                        netPingAvgMs:
+                          type: string
+                        netPingStatus:
+                          type: string
+                        netTtfbMs:
+                          type: string
+                        networkStatus:
+                          type: string
+                      type: object
                     message:
                       description: Message is a human-readable detail for this worker.
                       type: string

@@ -202,10 +202,13 @@ func disksJSON(disks []resolvedDisk) string {
 	return string(b)
 }
 
+// defaultSuiteSections runs the full modular suite (network auto-skips offline).
+const defaultSuiteSections = "all"
+
 // cloudInitUserData installs tools, drops the suite, and auto-runs selected sections.
 func cloudInitUserData(sections, nodeName string, disks []resolvedDisk) string {
 	if sections == "" {
-		sections = "storage"
+		sections = defaultSuiteSections
 	}
 	suite := strings.TrimSpace(suitepayload.SuiteSH) + "\n"
 	dj := disksJSON(disks)
@@ -214,6 +217,12 @@ package_update: true
 packages:
   - fio
   - xfsprogs
+  - gcc
+  - stress-ng
+  - git
+  - bind-utils
+  - iputils
+  - curl
 write_files:
   - path: /etc/canario/disks.json
     permissions: '0644'
@@ -223,6 +232,7 @@ write_files:
     permissions: '0644'
     content: |
       CANARIO_SUITE_SECTIONS=%s
+      CANARIO_NETWORK=auto
       CANARIO_NODE_NAME=%s
       CANARIO_DISKS_JSON_FILE=/etc/canario/disks.json
       CANARIO_DATA_MOUNT=/mnt/canario-data
@@ -307,7 +317,7 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 	cpu, memory, diskSize := profileResources(run.Spec.Profile)
 	vmName := newCioVMName(run.Name, nodeName, time.Now())
 
-	secretName, err := r.ensureCloudInitSecret(ctx, run, vmName, "storage", nodeName, disks)
+	secretName, err := r.ensureCloudInitSecret(ctx, run, vmName, defaultSuiteSections, nodeName, disks)
 	if err != nil {
 		return nil, fmt.Errorf("cloud-init secret: %w", err)
 	}
