@@ -49,6 +49,38 @@ var _ = Describe("CioVM helpers", func() {
 
 		cp := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "m1", Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}}}
 		Expect(isWorkerNode(cp)).To(BeFalse())
+
+		// Dedicated ODF storage/infra: tainted NoSchedule — skip.
+		dedicated := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "storage-1",
+				Labels: map[string]string{
+					"node-role.kubernetes.io/worker":               "",
+					"node-role.kubernetes.io/infra":                "",
+					"cluster.ocs.openshift.io/openshift-storage":   "",
+				},
+			},
+			Spec: corev1.NodeSpec{
+				Taints: []corev1.Taint{{
+					Key:    "node.ocs.openshift.io/storage",
+					Value:  "true",
+					Effect: corev1.TaintEffectNoSchedule,
+				}},
+			},
+		}
+		Expect(isWorkerNode(dedicated)).To(BeFalse())
+
+		// Hyperconverged: storage label, no taint — still a valid worker.
+		hc := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "hc-1",
+				Labels: map[string]string{
+					"node-role.kubernetes.io/worker":             "",
+					"cluster.ocs.openshift.io/openshift-storage": "",
+				},
+			},
+		}
+		Expect(isWorkerNode(hc)).To(BeTrue())
 	})
 
 	It("aggregates multi-worker terminal phases", func() {
@@ -63,37 +95,36 @@ var _ = Describe("CioVM helpers", func() {
 	})
 
 	It("selects all vs busiest worker targets", func() {
-		names := []string{"w1", "w2", "w3"}
-		all, err := selectWorkerTargets(canariov1alpha1.WorkersAll, names)
+		nodes := []scoredNode{
+			{Name: "w1", CPUUtil: 0.2, MemUtil: 0.2},
+			{Name: "w2", CPUUtil: 0.7, MemUtil: 0.5},
+			{Name: "w3", CPUUtil: 0.4, MemUtil: 0.4},
+		}
+		all, err := selectWorkerTargets(canariov1alpha1.WorkersAll, nodes, 0.85, 0.75)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(all).To(Equal(names))
+		Expect(all).To(Equal([]string{"w1", "w2", "w3"}))
 
-		one, err := selectWorkerTargets(canariov1alpha1.WorkersBusiest, names)
+		one, err := selectWorkerTargets(canariov1alpha1.WorkersBusiest, nodes, 0.85, 0.75)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(one).To(Equal([]string{"w1"}))
+		Expect(one).To(Equal([]string{"w2"}))
 
-		_, err = selectWorkerTargets(canariov1alpha1.WorkersAll, nil)
+		_, err = selectWorkerTargets(canariov1alpha1.WorkersAll, nil, 0.85, 0.75)
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("stagger skips create while a CioVM is Pending", func() {
-		pending := &unstructured.Unstructured{Object: map[string]interface{}{
-			"metadata": map[string]interface{}{
-				"name":        "vm-a",
-				"annotations": map[string]interface{}{annoCioNode: "w1"},
-			},
-			"status": map[string]interface{}{"printableStatus": "Starting"},
-		}}
-		Expect(observeCioVM(pending).Phase).To(Equal(cioVMPhasePending))
+	It("staggers creates by wall-clock interval, not Ready", func() {
+		Expect(staggerWait(nil, time.Now())).To(Equal(time.Duration(0)))
 
-		ready := &unstructured.Unstructured{Object: map[string]interface{}{
-			"metadata": map[string]interface{}{
-				"name":        "vm-b",
-				"annotations": map[string]interface{}{annoCioNode: "w2"},
-			},
-			"status": map[string]interface{}{"ready": true},
-		}}
-		Expect(observeCioVM(ready).Phase).To(Equal(cioVMPhaseReady))
+		created := metav1.NewTime(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC))
+		vm := &unstructured.Unstructured{}
+		vm.SetCreationTimestamp(created)
+		byNode := map[string]*unstructured.Unstructured{"w1": vm}
+
+		now := created.Time.Add(3 * time.Second)
+		Expect(staggerWait(byNode, now)).To(Equal(7 * time.Second))
+
+		now = created.Time.Add(cioVMStaggerInterval)
+		Expect(staggerWait(byNode, now)).To(Equal(time.Duration(0)))
 	})
 
 	It("builds CioVM names as run-workernode-timestamp", func() {

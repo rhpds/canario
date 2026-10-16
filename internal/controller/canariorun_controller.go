@@ -48,6 +48,9 @@ type CanarioRunReconciler struct {
 	// GuestDefaults are install-time boot defaults (from CANARIO_DEFAULT_GUEST_*).
 	GuestDefaults OperatorGuestDefaults
 
+	// Thresholds are install-time node/storage usage ceilings (from CANARIO_*_USAGE_CEILING).
+	Thresholds OperatorThresholds
+
 	// VirtAvailable overrides API discovery when set (used by unit tests).
 	VirtAvailable func(ctx context.Context) (bool, error)
 
@@ -67,6 +70,7 @@ type CanarioRunReconciler struct {
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datasources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=storageprofiles,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ceph.rook.io,resources=cephclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
@@ -160,19 +164,19 @@ func (r *CanarioRunReconciler) virtAvailable(ctx context.Context) (bool, error) 
 func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canariov1alpha1.CanarioRun) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	targets, err := r.resolveWorkerNodes(ctx, run)
-	if err != nil {
-		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
-			s.Phase = canariov1alpha1.PhaseFailed
-			s.Message = "workers: " + err.Error()
-		})
-	}
-
 	disks, err := r.resolveDataDisks(ctx, run)
 	if err != nil {
 		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 			s.Phase = canariov1alpha1.PhaseFailed
 			s.Message = "storage: " + err.Error()
+		})
+	}
+
+	targets, err := r.resolveWorkerNodes(ctx, run, disks)
+	if err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+			s.Phase = canariov1alpha1.PhaseFailed
+			s.Message = "workers: " + err.Error()
 		})
 	}
 
@@ -190,7 +194,8 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 		})
 	}
 
-	if err := r.ensureCioVMsStaggered(ctx, run, targets, disks, boot); err != nil {
+	staggerRequeue, err := r.ensureCioVMsStaggered(ctx, run, targets, disks, boot)
+	if err != nil {
 		log.Error(err, "failed to ensure CioVMs")
 		return ctrl.Result{}, err
 	}
@@ -285,7 +290,11 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: suitePollInterval}, nil
+		requeue := suitePollInterval
+		if staggerRequeue > 0 && staggerRequeue < requeue {
+			requeue = staggerRequeue
+		}
+		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
 	phase := canariov1alpha1.PhaseSucceeded

@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +51,8 @@ const (
 	annoCioNode     = "canario.rhpds.com/node"
 	// maxCioVMName leaves room for a "-data" DataVolume name (DNS-1123 ≤63).
 	maxCioVMName = 58
+	// cioVMStaggerInterval spaces CioVM creates so workers:all does not start every VM at t=0.
+	cioVMStaggerInterval = 10 * time.Second
 )
 
 var (
@@ -515,97 +516,76 @@ func observeCioVM(vm *unstructured.Unstructured) cioVMStatus {
 	return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM pending", Name: name, NodeName: node}
 }
 
-// ensureCioVMsStaggered creates at most one missing CioVM per reconcile while any
-// existing CioVM is still Pending (not Ready/Failed). Ready/Failed workers do not block.
-func (r *CanarioRunReconciler) ensureCioVMsStaggered(ctx context.Context, run *canariov1alpha1.CanarioRun, targets []string, disks []resolvedDisk, boot bootSource) error {
+// ensureCioVMsStaggered creates missing CioVMs spaced by cioVMStaggerInterval.
+// It does not wait for Ready or suite completion — only delays the next create.
+// Returns a requeue hint when the next create is still within the stagger window.
+func (r *CanarioRunReconciler) ensureCioVMsStaggered(ctx context.Context, run *canariov1alpha1.CanarioRun, targets []string, disks []resolvedDisk, boot bootSource) (time.Duration, error) {
 	byNode, err := r.cioVMsByNode(ctx, run)
 	if err != nil {
-		return err
-	}
-
-	for _, vm := range byNode {
-		if observeCioVM(vm).Phase == cioVMPhasePending {
-			return nil
-		}
+		return 0, err
 	}
 
 	for _, node := range targets {
 		if _, ok := byNode[node]; ok {
 			continue
 		}
+		if wait := staggerWait(byNode, time.Now()); wait > 0 {
+			return wait, nil
+		}
 		if _, err := r.createCioVM(ctx, run, node, disks, boot); err != nil {
-			return err
+			return 0, err
 		}
-		return nil
+		// Space the following create; callers requeue on this hint.
+		return cioVMStaggerInterval, nil
 	}
-	return nil
+	return 0, nil
 }
 
-// resolveWorkerNodes returns the target worker node names for this Run.
-// workers=all → all schedulable workers (sorted); busiest → one node (first for now);
-// otherwise treat Spec.Workers as an explicit node name.
-func (r *CanarioRunReconciler) resolveWorkerNodes(ctx context.Context, run *canariov1alpha1.CanarioRun) ([]string, error) {
-	workers := run.Spec.Workers
-	if workers == "" {
-		workers = canariov1alpha1.WorkersAll
+// staggerWait is how long to wait before creating another CioVM, based on the
+// newest existing VM's creationTimestamp. Zero means create is allowed now.
+func staggerWait(byNode map[string]*unstructured.Unstructured, now time.Time) time.Duration {
+	if len(byNode) == 0 {
+		return 0
 	}
-
-	if workers != canariov1alpha1.WorkersAll && workers != canariov1alpha1.WorkersBusiest {
-		return []string{workers}, nil
-	}
-
-	names, err := r.listWorkerNodeNames(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return selectWorkerTargets(workers, names)
-}
-
-// selectWorkerTargets applies workers=all|busiest to a sorted worker name list.
-func selectWorkerTargets(mode string, names []string) ([]string, error) {
-	if len(names) == 0 {
-		return nil, fmt.Errorf("no worker nodes found")
-	}
-	if mode == canariov1alpha1.WorkersBusiest {
-		// Load-based selection later; stable first worker for now.
-		return []string{names[0]}, nil
-	}
-	out := make([]string, len(names))
-	copy(out, names)
-	return out, nil
-}
-
-func (r *CanarioRunReconciler) listWorkerNodeNames(ctx context.Context) ([]string, error) {
-	nodeList := &corev1.NodeList{}
-	if err := r.List(ctx, nodeList); err != nil {
-		return nil, fmt.Errorf("list nodes: %w", err)
-	}
-	var names []string
-	for i := range nodeList.Items {
-		if isWorkerNode(&nodeList.Items[i]) {
-			names = append(names, nodeList.Items[i].Name)
+	var latest time.Time
+	for _, vm := range byNode {
+		t := vm.GetCreationTimestamp().Time
+		if t.After(latest) {
+			latest = t
 		}
 	}
-	sort.Strings(names)
-	return names, nil
+	if latest.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(latest)
+	if elapsed >= cioVMStaggerInterval {
+		return 0
+	}
+	return cioVMStaggerInterval - elapsed
 }
 
+// isWorkerNode reports whether a node is a valid Canario placement target for
+// workers=all|busiest. CioVMs have no tolerations, so any NoSchedule/NoExecute
+// taint means we cannot deploy there (dedicated ODF storage/infra, cordon
+// pressure taints, control-plane, etc.).
+//
+// Hyperconverged "storage + worker" nodes are kept when they only carry storage
+// labels (e.g. cluster.ocs.openshift.io/openshift-storage) and are not tainted
+// — those are real compute workers. Explicit Spec.Workers=<node> bypasses this.
 func isWorkerNode(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
 		return false
-	}
-	for _, t := range node.Spec.Taints {
-		if t.Key == "node-role.kubernetes.io/control-plane" || t.Key == "node-role.kubernetes.io/master" {
-			if t.Effect == corev1.TaintEffectNoSchedule || t.Effect == corev1.TaintEffectNoExecute {
-				return false
-			}
-		}
 	}
 	if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
 		return false
 	}
 	if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
 		return false
+	}
+	for _, t := range node.Spec.Taints {
+		if t.Effect == corev1.TaintEffectNoSchedule || t.Effect == corev1.TaintEffectNoExecute {
+			return false
+		}
 	}
 	return true
 }

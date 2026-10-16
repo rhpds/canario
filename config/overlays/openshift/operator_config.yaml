@@ -16,3 +16,7 @@ data:
   CANARIO_DEFAULT_GUEST_DATASOURCE_NAME: ""
   CANARIO_DEFAULT_GUEST_DATASOURCE_NAMESPACE: ""
   CANARIO_DEFAULT_GUEST_REGISTRY: ""
+  # Placement ceilings (0.85, 85, or 85%). Worker needs CPU+mem under NODE and storage under STORAGE.
+  # Storage: Ceph used/total when SC is ceph; else node ephemeral-storage requests/allocatable.
+  CANARIO_NODE_USAGE_CEILING: "0.85"
+  CANARIO_STORAGE_USAGE_CEILING: "0.75"
