@@ -202,10 +202,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	guestDefaults := controller.GuestDefaultsFromEnv()
+	setupLog.Info("guest boot defaults",
+		"dataSourceName", guestDefaults.DataSourceName,
+		"dataSourceNamespace", guestDefaults.DataSourceNamespace,
+		"registry", guestDefaults.Registry,
+	)
+
 	if err := (&controller.CanarioRunReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		RESTMapper: mgr.GetRESTMapper(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		RESTMapper:    mgr.GetRESTMapper(),
+		Config:        mgr.GetConfig(),
+		GuestDefaults: guestDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CanarioRun")
 		os.Exit(1)

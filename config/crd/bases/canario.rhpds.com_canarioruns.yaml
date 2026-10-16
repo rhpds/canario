@@ -18,11 +18,11 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.type
-      name: Type
+    - jsonPath: .status.nodeName
+      name: Node
       type: string
-    - jsonPath: .spec.profile
-      name: Profile
+    - jsonPath: .status.suiteStatus
+      name: Suite
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -30,7 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: CanarioRun is a one-shot guest canary campaign.
+        description: CanarioRun is a one-shot guest canary experiment.
         properties:
           apiVersion:
             description: |-
@@ -53,6 +53,33 @@ spec:
             description: CanarioRunSpec is the desired configuration for a one-shot
               canary run.
             properties:
+              guestImage:
+                description: |-
+                  GuestImage selects the boot disk (DataSource clone or registry pull).
+                  Optional when the operator is configured with install-time defaults
+                  (CANARIO_DEFAULT_GUEST_*); otherwise required.
+                properties:
+                  dataSource:
+                    description: DataSource clones a Ready CDI DataSource in the given
+                      namespace.
+                    properties:
+                      name:
+                        description: Name of the DataSource (e.g. fedora, rhel9).
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the DataSource (cluster-specific;
+                          no default).
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  registry:
+                    description: Registry pulls via CDI (e.g. docker://quay.io/containerdisks/fedora:40).
+                    type: string
+                type: object
               profile:
                 default: small
                 description: 'Profile selects VM sizing: small (periodic default)
@@ -61,10 +88,22 @@ spec:
                 - small
                 - default
                 type: string
-              storageClass:
-                description: StorageClass for the guest VM disk. Empty uses the cluster
-                  default.
+              storage:
+                default: default
+                description: |-
+                  Storage selects how data disks are chosen: "default" (cluster default SC)
+                  or "list" (explicit storageClasses).
+                enum:
+                - default
+                - list
                 type: string
+              storageClasses:
+                description: |-
+                  StorageClasses is the explicit list of StorageClasses when storage=list
+                  (one guest data disk per entry).
+                items:
+                  type: string
+                type: array
               type:
                 default: guest
                 description: Type selects the canary experiment. "guest" creates a
@@ -81,11 +120,64 @@ spec:
           status:
             description: CanarioRunStatus is the observed state of a CanarioRun.
             properties:
+              cioVMName:
+                description: CioVMName is the owned KubeVirt VirtualMachine name.
+                type: string
+              completionTime:
+                description: CompletionTime is when the suite finished (UTC).
+                format: date-time
+                type: string
+              disks:
+                description: Disks are per-StorageClass suite results.
+                items:
+                  description: DiskResult holds suite metrics for one attached data
+                    disk / StorageClass.
+                  properties:
+                    accessMode:
+                      type: string
+                    dataDev:
+                      type: string
+                    fileopsCreate1000Ms:
+                      type: string
+                    fileopsTarCreateMs:
+                      type: string
+                    fileopsTarExtractMs:
+                      type: string
+                    fioRandReadIOPS:
+                      type: string
+                    fioRandWriteIOPS:
+                      type: string
+                    fioSeqReadBW:
+                      type: string
+                    fioSeqWriteBW:
+                      type: string
+                    message:
+                      type: string
+                    nodeName:
+                      type: string
+                    provisioner:
+                      type: string
+                    sections:
+                      type: string
+                    storageClass:
+                      type: string
+                    suiteStatus:
+                      type: string
+                    volumeMode:
+                      type: string
+                  type: object
+                type: array
               message:
                 description: Message is a human-readable detail for the current phase.
                 type: string
+              nodeName:
+                description: NodeName is the worker where the CioVM was placed.
+                type: string
               phase:
                 description: Phase is Pending, Running, Succeeded, or Failed.
+                type: string
+              suiteStatus:
+                description: SuiteStatus is the overall in-guest suite status (running|succeeded|failed).
                 type: string
             type: object
         type: object

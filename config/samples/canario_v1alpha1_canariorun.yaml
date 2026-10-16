@@ -6,4 +6,12 @@ spec:
   type: guest
   profile: small
   workers: all
-  # storageClass: ocs-external-storagecluster-ceph-rbd
+  # guestImage optional when the operator ConfigMap has CANARIO_DEFAULT_GUEST_*.
+  # Override per Run when needed:
+  # guestImage:
+  #   dataSource:
+  #     name: rhel9
+  #     namespace: openshift-virtualization-os-images
+  storage: list
+  storageClasses:
+    - ocs-external-storagecluster-ceph-rbd

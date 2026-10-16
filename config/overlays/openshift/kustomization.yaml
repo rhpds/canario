@@ -1,0 +1,10 @@
+# OpenShift / CNV deploy: base + SCC + install-time operator ConfigMap.
+# Vanilla Kubernetes + KubeVirt: use config/default (no SCCs / no OCP CM).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../default
+- scc
+- operator_config.yaml
+patches:
+- path: manager_defaults_patch.yaml

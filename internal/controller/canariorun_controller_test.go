@@ -53,6 +53,14 @@ var _ = Describe("CanarioRun Controller", func() {
 						Type:    canariov1alpha1.RunTypeGuest,
 						Profile: canariov1alpha1.ProfileSmall,
 						Workers: canariov1alpha1.WorkersAll,
+						GuestImage: &canariov1alpha1.GuestImage{
+							DataSource: &canariov1alpha1.GuestDataSourceRef{
+								Name:      "fedora",
+								Namespace: "openshift-virtualization-os-images",
+							},
+						},
+						Storage:        canariov1alpha1.StorageList,
+						StorageClasses: []string{"ocs-rbd"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -66,34 +74,55 @@ var _ = Describe("CanarioRun Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 
-		It("should set Running when the CioVM is pending", func() {
+		It("should set Running while suite is still going", func() {
 			reconciler := &CanarioRunReconciler{
 				Client:        k8sClient,
 				Scheme:        k8sClient.Scheme(),
 				VirtAvailable: virtAvailable(true),
 				SyncCioVM: func(context.Context, *canariov1alpha1.CanarioRun) (cioVMStatus, error) {
-					return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM Starting"}, nil
+					return cioVMStatus{Phase: cioVMPhaseReady, Name: "vm-1", NodeName: "worker-1", Message: "ready"}, nil
+				},
+				ReadSuite: func(context.Context, string, string) (*suiteSnapshot, error) {
+					return &suiteSnapshot{Status: "running"}, nil
 				},
 			}
 
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			res, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 
 			updated := &canariov1alpha1.CanarioRun{}
 			Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(canariov1alpha1.PhaseRunning))
-			Expect(updated.Status.Message).To(Equal("CioVM Starting"))
+			Expect(updated.Status.SuiteStatus).To(Equal("running"))
+			Expect(updated.Status.NodeName).To(Equal("worker-1"))
 		})
 
-		It("should set Running when the CioVM is ready (suite not wired)", func() {
+		It("should set Succeeded with per-disk results and finish", func() {
 			reconciler := &CanarioRunReconciler{
 				Client:        k8sClient,
 				Scheme:        k8sClient.Scheme(),
 				VirtAvailable: virtAvailable(true),
 				SyncCioVM: func(context.Context, *canariov1alpha1.CanarioRun) (cioVMStatus, error) {
-					return cioVMStatus{Phase: cioVMPhaseReady, Message: "CioVM ready; suite not wired"}, nil
+					return cioVMStatus{Phase: cioVMPhaseReady, Name: "vm-1", NodeName: "worker-1"}, nil
+				},
+				ReadSuite: func(context.Context, string, string) (*suiteSnapshot, error) {
+					return &suiteSnapshot{
+						Status: "succeeded",
+						Done:   "2026-10-16T08:47:45Z",
+						Disks: []canariov1alpha1.DiskResult{
+							{
+								StorageClass:  "ocs-rbd",
+								DataDev:       "/dev/vdb",
+								SuiteStatus:   "succeeded",
+								Sections:      "storage",
+								NodeName:      "worker-1",
+								FioSeqWriteBW: "BW=320MiB/s",
+							},
+						},
+					}, nil
 				},
 			}
 
@@ -104,8 +133,11 @@ var _ = Describe("CanarioRun Controller", func() {
 
 			updated := &canariov1alpha1.CanarioRun{}
 			Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(canariov1alpha1.PhaseRunning))
-			Expect(updated.Status.Message).To(Equal("CioVM ready; suite not wired"))
+			Expect(updated.Status.Phase).To(Equal(canariov1alpha1.PhaseSucceeded))
+			Expect(updated.Status.SuiteStatus).To(Equal("succeeded"))
+			Expect(updated.Status.Disks).To(HaveLen(1))
+			Expect(updated.Status.Disks[0].FioSeqWriteBW).To(Equal("BW=320MiB/s"))
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
 		})
 
 		It("should fail without syncing CioVM when virt is unavailable", func() {

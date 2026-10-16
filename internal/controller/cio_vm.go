@@ -18,29 +18,54 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	canariov1alpha1 "github.com/rhpds/canario/api/v1alpha1"
+	"github.com/rhpds/canario/internal/controller/suitepayload"
 )
 
 // Naming: Cio = short handle for Canario. In Go we use CioVM.
 // Docs/comments may say CanarioVirtualMachine. If we ever expose this as a
 // product API/CRD (unlikely — today it is a KubeVirt VirtualMachine), use the
 // full name CanarioVirtualMachine, not CioVM.
+//
+// CioVM object name: {canariorun}-{shortWorker}-{UTC timestamp}
 
-var virtualMachineGVK = schema.GroupVersionKind{
-	Group:   "kubevirt.io",
-	Version: "v1",
-	Kind:    "VirtualMachine",
-}
+const (
+	labelCanarioRun = "canario.rhpds.com/canariorun"
+	annoCioNode     = "canario.rhpds.com/node"
+	// maxCioVMName leaves room for a "-data" DataVolume name (DNS-1123 ≤63).
+	maxCioVMName = 58
+)
+
+var (
+	virtualMachineGVK = schema.GroupVersionKind{
+		Group:   "kubevirt.io",
+		Version: "v1",
+		Kind:    "VirtualMachine",
+	}
+	virtualMachineListGVK = schema.GroupVersionKind{
+		Group:   "kubevirt.io",
+		Version: "v1",
+		Kind:    "VirtualMachineList",
+	}
+	dnsLabelCleaner = regexp.MustCompile(`[^a-z0-9-]+`)
+)
 
 // cioVMPhase is the observed CanarioVirtualMachine (CioVM) lifecycle for status sync.
 type cioVMPhase string
@@ -53,16 +78,80 @@ const (
 )
 
 type cioVMStatus struct {
-	Phase   cioVMPhase
-	Message string
+	Phase    cioVMPhase
+	Message  string
+	Name     string
+	NodeName string
 }
 
-func cioVMName(run *canariov1alpha1.CanarioRun) string {
-	return run.Name
+// sanitizeDNS1123 lowercases and strips to [a-z0-9-].
+func sanitizeDNS1123(s string) string {
+	n := dnsLabelCleaner.ReplaceAllString(strings.ToLower(s), "-")
+	n = strings.Trim(n, "-")
+	for strings.Contains(n, "--") {
+		n = strings.ReplaceAll(n, "--", "-")
+	}
+	return n
 }
 
-func cioVMDataVolumeName(run *canariov1alpha1.CanarioRun) string {
-	return run.Name + "-data"
+// nodeLabel keeps the real worker hostname (sanitized). Truncates from the
+// left only when needed so the unique suffix (e.g. 2bzjd-1) remains.
+func nodeLabel(node string, maxLen int) string {
+	n := sanitizeDNS1123(node)
+	if n == "" {
+		return "node"
+	}
+	if maxLen < 1 {
+		maxLen = 1
+	}
+	if len(n) > maxLen {
+		n = strings.Trim(n[len(n)-maxLen:], "-")
+	}
+	if n == "" {
+		return "node"
+	}
+	return n
+}
+
+// newCioVMName builds {canariorun}-{workernode}-{yyyymmddtHHMMSS} (DNS-1123, ≤58).
+// Example: nightly-ceph-worker-cluster-2bzjd-1-20261016t081944
+func newCioVMName(runName, node string, now time.Time) string {
+	ts := now.UTC().Format("20060102t150405") // 16 chars
+	run := sanitizeDNS1123(runName)
+	if run == "" {
+		run = "run"
+	}
+
+	// Prefer full worker name; shrink run then node only if over maxCioVMName.
+	const sep = 2 // two hyphens
+	budget := maxCioVMName - len(ts) - sep
+	if budget < 2 {
+		budget = 2
+	}
+	// Give node priority for readability; run keeps at least 8 chars when possible.
+	maxRun := len(run)
+	maxNode := budget - maxRun
+	if maxNode < 8 {
+		maxNode = 8
+		maxRun = budget - maxNode
+		if maxRun < 1 {
+			maxRun = 1
+			maxNode = budget - 1
+		}
+	}
+	if len(run) > maxRun {
+		run = strings.Trim(run[:maxRun], "-")
+	}
+	sn := nodeLabel(node, maxNode)
+	name := fmt.Sprintf("%s-%s-%s", run, sn, ts)
+	if len(name) > maxCioVMName {
+		name = strings.Trim(name[:maxCioVMName], "-")
+	}
+	return name
+}
+
+func cioVMDataVolumeName(vmName string, index int) string {
+	return fmt.Sprintf("%s-d%d", vmName, index)
 }
 
 func profileResources(profile string) (cpu string, memory string, disk string) {
@@ -70,59 +159,227 @@ func profileResources(profile string) (cpu string, memory string, disk string) {
 	case canariov1alpha1.ProfileDefault:
 		return "2", "4Gi", "30Gi"
 	default:
-		// small and unknown → small
 		return "1", "2Gi", "15Gi"
 	}
 }
 
-// getCioVM fetches the owned KubeVirt VirtualMachine (CanarioVirtualMachine), if present.
+func indentYAML(s string, spaces int) string {
+	pad := strings.Repeat(" ", spaces)
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = pad + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func disksJSON(disks []resolvedDisk) string {
+	type row struct {
+		StorageClass string `json:"storage_class"`
+		DataDev      string `json:"data_dev"`
+		VolumeMode   string `json:"volume_mode"`
+		AccessMode   string `json:"access_mode"`
+		Provisioner  string `json:"provisioner"`
+	}
+	rows := make([]row, 0, len(disks))
+	for _, d := range disks {
+		rows = append(rows, row{
+			StorageClass: d.StorageClass,
+			DataDev:      d.Device,
+			VolumeMode:   string(d.VolumeMode),
+			AccessMode:   string(d.AccessMode),
+			Provisioner:  d.Provisioner,
+		})
+	}
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// cloudInitUserData installs tools, drops the suite, and auto-runs selected sections.
+func cloudInitUserData(sections, nodeName string, disks []resolvedDisk) string {
+	if sections == "" {
+		sections = "storage"
+	}
+	suite := strings.TrimSpace(suitepayload.SuiteSH) + "\n"
+	dj := disksJSON(disks)
+	return fmt.Sprintf(`#cloud-config
+package_update: true
+packages:
+  - fio
+  - xfsprogs
+write_files:
+  - path: /etc/canario/disks.json
+    permissions: '0644'
+    content: |
+%s
+  - path: /etc/canario/env
+    permissions: '0644'
+    content: |
+      CANARIO_SUITE_SECTIONS=%s
+      CANARIO_NODE_NAME=%s
+      CANARIO_DISKS_JSON_FILE=/etc/canario/disks.json
+      CANARIO_DATA_MOUNT=/mnt/canario-data
+      CANARIO_RESULTS_DIR=/var/lib/canario
+  - path: /usr/local/bin/canario-suite
+    permissions: '0755'
+    content: |
+%s
+runcmd:
+  - [ bash, -lc, "set -a; source /etc/canario/env; /usr/local/bin/canario-suite >>/var/log/canario-suite.log 2>&1" ]
+`, indentYAML(dj, 6), sections, nodeName, indentYAML(suite, 6))
+}
+
+// listCioVMs returns CioVMs owned by this CanarioRun (by label).
+func (r *CanarioRunReconciler) listCioVMs(ctx context.Context, run *canariov1alpha1.CanarioRun) ([]unstructured.Unstructured, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(virtualMachineListGVK)
+	if err := r.List(ctx, list,
+		client.InNamespace(run.Namespace),
+		client.MatchingLabels{labelCanarioRun: run.Name},
+	); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// getCioVM fetches one owned CioVM if present (first match).
 func (r *CanarioRunReconciler) getCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) (*unstructured.Unstructured, error) {
-	vm := &unstructured.Unstructured{}
-	vm.SetGroupVersionKind(virtualMachineGVK)
-	err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: cioVMName(run)}, vm)
+	items, err := r.listCioVMs(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	return vm, nil
+	if len(items) == 0 {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "kubevirt.io", Resource: "virtualmachines"}, run.Name)
+	}
+	return &items[0], nil
 }
 
-// createCioVM creates a CanarioVirtualMachine: boot containerDisk + blank data volume on the requested StorageClass.
-func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun, nodeName string) (*unstructured.Unstructured, error) {
-	log := logf.FromContext(ctx)
-	cpu, memory, disk := profileResources(run.Spec.Profile)
-	dvName := cioVMDataVolumeName(run)
+func cloudInitSecretName(vmName string) string {
+	// vmName ≤58; "-cloudinit" is 10 chars → ≤68, trim if needed (Secret names ≤253).
+	return vmName + "-cloudinit"
+}
 
-	dvSpec := map[string]interface{}{
-		"source": map[string]interface{}{
-			"blank": map[string]interface{}{},
+// ensureCloudInitSecret stores userdata in a Secret (KubeVirt inline userdata max 2048 bytes).
+func (r *CanarioRunReconciler) ensureCloudInitSecret(ctx context.Context, run *canariov1alpha1.CanarioRun, vmName, sections, nodeName string, disks []resolvedDisk) (string, error) {
+	name := cloudInitSecretName(vmName)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: run.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "canario",
+				"app.kubernetes.io/component": "ciovm",
+				labelCanarioRun:               run.Name,
+			},
 		},
-		"pvc": map[string]interface{}{
-			"accessModes": []interface{}{"ReadWriteOnce"},
-			"resources": map[string]interface{}{
-				"requests": map[string]interface{}{
-					"storage": disk,
-				},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"userdata": []byte(cloudInitUserData(sections, nodeName, disks)),
+		},
+	}
+	if err := ctrl.SetControllerReference(run, secret, r.Scheme); err != nil {
+		return "", err
+	}
+	if err := r.Create(ctx, secret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return "", err
+		}
+	}
+	return name, nil
+}
+
+// createCioVM creates a CanarioVirtualMachine: boot DV (DataSource/registry) + N blank data volumes + cloud-init suite.
+func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun, nodeName string, disks []resolvedDisk, boot bootSource) (*unstructured.Unstructured, error) {
+	log := logf.FromContext(ctx)
+	cpu, memory, diskSize := profileResources(run.Spec.Profile)
+	vmName := newCioVMName(run.Name, nodeName, time.Now())
+
+	secretName, err := r.ensureCloudInitSecret(ctx, run, vmName, "storage", nodeName, disks)
+	if err != nil {
+		return nil, fmt.Errorf("cloud-init secret: %w", err)
+	}
+
+	// Root PVC SC: prefer first data disk SC so clones land on known virt storage.
+	rootSC := ""
+	if len(disks) > 0 {
+		rootSC = disks[0].StorageClass
+	}
+
+	diskDevices := []interface{}{
+		map[string]interface{}{
+			"name": "rootdisk",
+			"disk": map[string]interface{}{"bus": "virtio"},
+		},
+	}
+	volumes := []interface{}{
+		map[string]interface{}{
+			"name": "rootdisk",
+			"dataVolume": map[string]interface{}{
+				"name": cioVMRootVolumeName(vmName),
 			},
 		},
 	}
-	if run.Spec.StorageClass != "" {
-		pvc := dvSpec["pvc"].(map[string]interface{})
-		pvc["storageClassName"] = run.Spec.StorageClass
+	dvTemplates := []interface{}{
+		rootDataVolumeTemplate(vmName, boot, "30Gi", rootSC),
 	}
+
+	for i, d := range disks {
+		volName := fmt.Sprintf("datadisk-%d", i)
+		dvName := cioVMDataVolumeName(vmName, i)
+		pvc := map[string]interface{}{
+			"accessModes": []interface{}{string(d.AccessMode)},
+			"resources": map[string]interface{}{
+				"requests": map[string]interface{}{
+					"storage": diskSize,
+				},
+			},
+			"storageClassName": d.StorageClass,
+		}
+		if d.VolumeMode != "" {
+			pvc["volumeMode"] = string(d.VolumeMode)
+		}
+		dvTemplates = append(dvTemplates, map[string]interface{}{
+			"metadata": map[string]interface{}{"name": dvName},
+			"spec": map[string]interface{}{
+				"source": map[string]interface{}{"blank": map[string]interface{}{}},
+				"pvc":    pvc,
+			},
+		})
+		diskDevices = append(diskDevices, map[string]interface{}{
+			"name": volName,
+			"disk": map[string]interface{}{"bus": "virtio"},
+		})
+		volumes = append(volumes, map[string]interface{}{
+			"name": volName,
+			"dataVolume": map[string]interface{}{
+				"name": dvName,
+			},
+		})
+	}
+
+	diskDevices = append(diskDevices, map[string]interface{}{
+		"name": "cloudinitdisk",
+		"disk": map[string]interface{}{"bus": "virtio"},
+	})
+	volumes = append(volumes, map[string]interface{}{
+		"name": "cloudinitdisk",
+		// Suite script is too large for inline userdata (KubeVirt 2048-byte limit).
+		"cloudInitNoCloud": map[string]interface{}{
+			"secretRef": map[string]interface{}{
+				"name": secretName,
+			},
+		},
+	})
 
 	vmiSpec := map[string]interface{}{
 		"domain": map[string]interface{}{
 			"devices": map[string]interface{}{
-				"disks": []interface{}{
-					map[string]interface{}{
-						"name": "rootdisk",
-						"disk": map[string]interface{}{"bus": "virtio"},
-					},
-					map[string]interface{}{
-						"name": "datadisk",
-						"disk": map[string]interface{}{"bus": "virtio"},
-					},
-				},
+				"disks": diskDevices,
 			},
 			"resources": map[string]interface{}{
 				"requests": map[string]interface{}{
@@ -131,21 +388,7 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 				},
 			},
 		},
-		"volumes": []interface{}{
-			map[string]interface{}{
-				"name": "rootdisk",
-				"containerDisk": map[string]interface{}{
-					// Placeholder boot image; suite wiring comes later.
-					"image": "quay.io/containerdisks/fedora:40",
-				},
-			},
-			map[string]interface{}{
-				"name": "datadisk",
-				"dataVolume": map[string]interface{}{
-					"name": dvName,
-				},
-			},
-		},
+		"volumes": volumes,
 	}
 	if nodeName != "" {
 		vmiSpec["nodeSelector"] = map[string]interface{}{
@@ -158,30 +401,26 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 			"apiVersion": "kubevirt.io/v1",
 			"kind":       "VirtualMachine",
 			"metadata": map[string]interface{}{
-				"name":      cioVMName(run),
+				"name":      vmName,
 				"namespace": run.Namespace,
 				"labels": map[string]interface{}{
-					"app.kubernetes.io/name":       "canario",
-					"app.kubernetes.io/component":  "ciovm",
-					"canario.rhpds.com/canariorun": run.Name,
+					"app.kubernetes.io/name":      "canario",
+					"app.kubernetes.io/component": "ciovm",
+					labelCanarioRun:               run.Name,
+				},
+				"annotations": map[string]interface{}{
+					annoCioNode: nodeName,
 				},
 			},
 			"spec": map[string]interface{}{
-				"running": true,
-				"dataVolumeTemplates": []interface{}{
-					map[string]interface{}{
-						"metadata": map[string]interface{}{
-							"name": dvName,
-						},
-						"spec": dvSpec,
-					},
-				},
+				"runStrategy":         "Always",
+				"dataVolumeTemplates": dvTemplates,
 				"template": map[string]interface{}{
 					"metadata": map[string]interface{}{
 						"labels": map[string]interface{}{
-							"app.kubernetes.io/name":       "canario",
-							"app.kubernetes.io/component":  "ciovm",
-							"canario.rhpds.com/canariorun": run.Name,
+							"app.kubernetes.io/name":      "canario",
+							"app.kubernetes.io/component": "ciovm",
+							labelCanarioRun:               run.Name,
 						},
 					},
 					"spec": vmiSpec,
@@ -197,24 +436,50 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 	if err := r.Create(ctx, vm); err != nil {
 		return nil, err
 	}
-	log.Info("created CioVM", "vm", vm.GetName(), "node", nodeName, "storageClass", run.Spec.StorageClass)
+	scs := make([]string, len(disks))
+	for i, d := range disks {
+		scs[i] = d.StorageClass
+	}
+	log.Info("created CioVM", "vm", vm.GetName(), "node", nodeName, "storageClasses", scs,
+		"bootKind", boot.Kind, "bootDataSource", boot.DataSourceNamespace+"/"+boot.DataSourceName, "bootRegistry", boot.RegistryURL)
 	return vm, nil
 }
 
-// deleteCioVM deletes the CanarioVirtualMachine if it exists (DV/PVC follow owner refs when set by KubeVirt/CDI).
+// deleteCioVM deletes all CioVMs (and cloud-init Secrets) for this Run.
 func (r *CanarioRunReconciler) deleteCioVM(ctx context.Context, run *canariov1alpha1.CanarioRun) error {
 	log := logf.FromContext(ctx)
-	vm, err := r.getCioVM(ctx, run)
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
+	items, err := r.listCioVMs(ctx, run)
 	if err != nil {
+		// envtest / clusters without KubeVirt: nothing to delete
+		if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
+			log.Info("skip CioVM delete: VirtualMachine API unavailable")
+		} else {
+			return err
+		}
+	} else {
+		for i := range items {
+			vm := &items[i]
+			if err := r.Delete(ctx, vm); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			log.Info("deleted CioVM", "vm", vm.GetName())
+		}
+	}
+
+	secrets := &corev1.SecretList{}
+	if err := r.List(ctx, secrets,
+		client.InNamespace(run.Namespace),
+		client.MatchingLabels{labelCanarioRun: run.Name},
+	); err != nil {
 		return err
 	}
-	if err := r.Delete(ctx, vm); err != nil && !apierrors.IsNotFound(err) {
-		return err
+	for i := range secrets.Items {
+		s := &secrets.Items[i]
+		if err := r.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		log.Info("deleted cloud-init Secret", "secret", s.Name)
 	}
-	log.Info("deleted CioVM", "vm", vm.GetName())
 	return nil
 }
 
@@ -222,18 +487,25 @@ func observeCioVM(vm *unstructured.Unstructured) cioVMStatus {
 	if vm == nil {
 		return cioVMStatus{Phase: cioVMPhaseMissing, Message: "CioVM missing"}
 	}
+	name := vm.GetName()
+	node := vm.GetAnnotations()[annoCioNode]
 	ready, found, err := unstructured.NestedBool(vm.Object, "status", "ready")
 	if err == nil && found && ready {
-		return cioVMStatus{Phase: cioVMPhaseReady, Message: "CioVM ready; suite not wired"}
+		return cioVMStatus{
+			Phase:    cioVMPhaseReady,
+			Message:  "CioVM ready; waiting for suite",
+			Name:     name,
+			NodeName: node,
+		}
 	}
 	printable, _, _ := unstructured.NestedString(vm.Object, "status", "printableStatus")
 	if printable == "ErrorUnschedulable" || printable == "CrashLoopBackOff" || printable == "ErrImagePull" {
-		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "CioVM failed: " + printable}
+		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "CioVM failed: " + printable, Name: name, NodeName: node}
 	}
 	if printable != "" {
-		return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM " + printable}
+		return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM " + printable, Name: name, NodeName: node}
 	}
-	return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM pending"}
+	return cioVMStatus{Phase: cioVMPhasePending, Message: "CioVM pending", Name: name, NodeName: node}
 }
 
 // ensureCioVM gets or creates the CanarioVirtualMachine and returns its observed status.
@@ -251,7 +523,20 @@ func (r *CanarioRunReconciler) ensureCioVM(ctx context.Context, run *canariov1al
 		return cioVMStatus{}, err
 	}
 
-	vm, err = r.createCioVM(ctx, run, nodeName)
+	disks, err := r.resolveDataDisks(ctx, run)
+	if err != nil {
+		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "storage: " + err.Error()}, nil
+	}
+
+	boot, err := resolveBootSource(run, r.GuestDefaults)
+	if err != nil {
+		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "guestImage: " + err.Error()}, nil
+	}
+	if err := r.ensureBootSourceReady(ctx, boot); err != nil {
+		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "guestImage: " + err.Error()}, nil
+	}
+
+	vm, err = r.createCioVM(ctx, run, nodeName, disks, boot)
 	if err != nil {
 		return cioVMStatus{}, err
 	}
@@ -264,7 +549,6 @@ func (r *CanarioRunReconciler) pickWorkerNode(ctx context.Context, run *canariov
 		workers = canariov1alpha1.WorkersAll
 	}
 
-	// Explicit node name (not all/busiest).
 	if workers != canariov1alpha1.WorkersAll && workers != canariov1alpha1.WorkersBusiest {
 		return workers, nil
 	}

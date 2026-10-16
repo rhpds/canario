@@ -1,0 +1,8 @@
+# Applies the same namePrefix/namespace as config/default so SA subjects match.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: canario-operator
+namePrefix: canario-
+resources:
+- scc_role.yaml
+- scc_role_binding.yaml

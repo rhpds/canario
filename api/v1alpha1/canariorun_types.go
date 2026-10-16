@@ -29,11 +29,37 @@ const (
 	WorkersAll     = "all"
 	WorkersBusiest = "busiest"
 
+	StorageDefault = "default"
+	StorageList    = "list"
+
 	PhasePending   = "Pending"
 	PhaseRunning   = "Running"
 	PhaseSucceeded = "Succeeded"
 	PhaseFailed    = "Failed"
 )
+
+// GuestDataSourceRef selects a CDI DataSource (golden image PVC) by name and namespace.
+type GuestDataSourceRef struct {
+	// Name of the DataSource (e.g. fedora, rhel9).
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Namespace of the DataSource (cluster-specific; no default).
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+}
+
+// GuestImage selects the CioVM boot disk source.
+// Exactly one of dataSource or registry must be set.
+type GuestImage struct {
+	// DataSource clones a Ready CDI DataSource in the given namespace.
+	// +optional
+	DataSource *GuestDataSourceRef `json:"dataSource,omitempty"`
+
+	// Registry pulls via CDI (e.g. docker://quay.io/containerdisks/fedora:40).
+	// +optional
+	Registry string `json:"registry,omitempty"`
+}
 
 // CanarioRunSpec is the desired configuration for a one-shot canary run.
 type CanarioRunSpec struct {
@@ -51,8 +77,42 @@ type CanarioRunSpec struct {
 	// +kubebuilder:default=all
 	Workers string `json:"workers,omitempty"`
 
-	// StorageClass for the guest VM disk. Empty uses the cluster default.
-	StorageClass string `json:"storageClass,omitempty"`
+	// GuestImage selects the boot disk (DataSource clone or registry pull).
+	// Optional when the operator is configured with install-time defaults
+	// (CANARIO_DEFAULT_GUEST_*); otherwise required.
+	// +optional
+	GuestImage *GuestImage `json:"guestImage,omitempty"`
+
+	// Storage selects how data disks are chosen: "default" (cluster default SC)
+	// or "list" (explicit storageClasses).
+	// +kubebuilder:validation:Enum=default;list
+	// +kubebuilder:default=default
+	Storage string `json:"storage,omitempty"`
+
+	// StorageClasses is the explicit list of StorageClasses when storage=list
+	// (one guest data disk per entry).
+	// +optional
+	StorageClasses []string `json:"storageClasses,omitempty"`
+}
+
+// DiskResult holds suite metrics for one attached data disk / StorageClass.
+type DiskResult struct {
+	StorageClass     string `json:"storageClass,omitempty"`
+	DataDev          string `json:"dataDev,omitempty"`
+	VolumeMode       string `json:"volumeMode,omitempty"`
+	AccessMode       string `json:"accessMode,omitempty"`
+	Provisioner      string `json:"provisioner,omitempty"`
+	SuiteStatus      string `json:"suiteStatus,omitempty"`
+	Sections         string `json:"sections,omitempty"`
+	NodeName         string `json:"nodeName,omitempty"`
+	FioSeqWriteBW    string `json:"fioSeqWriteBW,omitempty"`
+	FioSeqReadBW     string `json:"fioSeqReadBW,omitempty"`
+	FioRandReadIOPS  string `json:"fioRandReadIOPS,omitempty"`
+	FioRandWriteIOPS string `json:"fioRandWriteIOPS,omitempty"`
+	FileopsCreateMs  string `json:"fileopsCreate1000Ms,omitempty"`
+	FileopsTarMs     string `json:"fileopsTarCreateMs,omitempty"`
+	FileopsExtractMs string `json:"fileopsTarExtractMs,omitempty"`
+	Message          string `json:"message,omitempty"`
 }
 
 // CanarioRunStatus is the observed state of a CanarioRun.
@@ -62,16 +122,33 @@ type CanarioRunStatus struct {
 
 	// Message is a human-readable detail for the current phase.
 	Message string `json:"message,omitempty"`
+
+	// CioVMName is the owned KubeVirt VirtualMachine name.
+	CioVMName string `json:"cioVMName,omitempty"`
+
+	// NodeName is the worker where the CioVM was placed.
+	NodeName string `json:"nodeName,omitempty"`
+
+	// SuiteStatus is the overall in-guest suite status (running|succeeded|failed).
+	SuiteStatus string `json:"suiteStatus,omitempty"`
+
+	// Disks are per-StorageClass suite results.
+	// +optional
+	Disks []DiskResult `json:"disks,omitempty"`
+
+	// CompletionTime is when the suite finished (UTC).
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
-// +kubebuilder:printcolumn:name="Profile",type=string,JSONPath=`.spec.profile`
+// +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.status.nodeName`
+// +kubebuilder:printcolumn:name="Suite",type=string,JSONPath=`.status.suiteStatus`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// CanarioRun is a one-shot guest canary campaign.
+// CanarioRun is a one-shot guest canary experiment.
 type CanarioRun struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

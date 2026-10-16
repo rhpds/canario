@@ -1,0 +1,18 @@
+# Install-time operator settings (change anytime; restart manager to pick up).
+# Do not assume a particular DataSource — set to what THIS cluster has:
+#   oc get datasource -A
+# Final name (default overlay already uses namePrefix canario- on other objects).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canario-operator-config
+  namespace: canario-operator
+  labels:
+    app.kubernetes.io/name: canario
+    app.kubernetes.io/managed-by: kustomize
+data:
+  # Exactly one of: (NAME + NAMESPACE) or REGISTRY.
+  # Empty until the installer / ocp-redeploy.sh fills them.
+  CANARIO_DEFAULT_GUEST_DATASOURCE_NAME: ""
+  CANARIO_DEFAULT_GUEST_DATASOURCE_NAMESPACE: ""
+  CANARIO_DEFAULT_GUEST_REGISTRY: ""

@@ -1,0 +1,18 @@
+# OpenShift: allow pods/exec into virt-launcher (SCC kubevirt-controller).
+# Required for guest-agent suite readout via virsh qemu-agent-command.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: canario
+    app.kubernetes.io/managed-by: kustomize
+  name: scc-kubevirt-controller
+rules:
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  resourceNames:
+  - kubevirt-controller
+  verbs:
+  - use

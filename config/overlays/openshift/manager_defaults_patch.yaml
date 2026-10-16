@@ -1,0 +1,15 @@
+# Patches the already name-prefixed Deployment from config/default.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: canario-controller-manager
+  namespace: canario-operator
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        envFrom:
+        - configMapRef:
+            name: canario-operator-config
+            optional: true
