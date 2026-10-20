@@ -28,9 +28,11 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	canariov1alpha1 "github.com/rhpds/canario/api/v1alpha1"
+	canariometrics "github.com/rhpds/canario/internal/metrics"
 )
 
 const (
@@ -100,7 +102,26 @@ func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"suiteStatus", run.Status.SuiteStatus,
 	)
 
+	if !run.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(run, canariometrics.MetricsFinalizer) {
+			canariometrics.DeleteRun(run)
+			controllerutil.RemoveFinalizer(run, canariometrics.MetricsFinalizer)
+			if err := r.Update(ctx, run); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(run, canariometrics.MetricsFinalizer) {
+		controllerutil.AddFinalizer(run, canariometrics.MetricsFinalizer)
+		if err := r.Update(ctx, run); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if isTerminal(run.Status.Phase) {
+		canariometrics.RecordRun(run)
 		return ctrl.Result{}, nil
 	}
 
@@ -323,6 +344,7 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	canariometrics.RecordRun(run)
 
 	if err := r.deleteCioVM(ctx, run); err != nil {
 		log.Error(err, "failed to delete CioVMs after suite")
@@ -472,6 +494,7 @@ func (r *CanarioRunReconciler) collectSingleAndCleanup(ctx context.Context, run 
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	canariometrics.RecordRun(run)
 
 	if err := r.deleteCioVM(ctx, run); err != nil {
 		log.Error(err, "failed to delete CioVM after suite")

@@ -1,0 +1,19 @@
+# Opt-in: scrape canario manager /metrics into Prometheus / OpenShift UWM.
+#
+# Prerequisites:
+#   1. Operator already installed (config/overlays/openshift or config/default)
+#   2. User Workload Monitoring enabled (OCP) — or any Prometheus Operator
+#      that watches ServiceMonitors in canario-operator
+#
+# Apply:
+#   kubectl apply -k config/overlays/monitoring
+#   # or: oc apply -k config/overlays/monitoring
+#
+# This does NOT modify cluster Prometheus CRs. It only creates our
+# ServiceMonitor + metrics-reader token Secret in canario-operator.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: canario-operator
+namePrefix: canario-
+resources:
+- ../../prometheus

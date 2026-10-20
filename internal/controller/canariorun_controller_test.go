@@ -72,6 +72,14 @@ var _ = Describe("CanarioRun Controller", func() {
 			err := k8sClient.Get(ctx, namespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			// Metrics finalizer: reconcile once more so DeleteRun runs and the object can leave.
+			cleanup := &CanarioRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err = cleanup.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, namespacedName, &canariov1alpha1.CanarioRun{})
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
 		})
 
 		It("should set Running while suite is still going", func() {

@@ -1,0 +1,14 @@
+# SA has ClusterRole canario-metrics-reader via canario-metrics-auth-rolebinding /
+# create an explicit reader binding in rbac if needed.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metrics-reader-token
+  namespace: system
+  annotations:
+    # Must match the deployed SA (config/default namePrefix canario-).
+    kubernetes.io/service-account.name: canario-controller-manager
+  labels:
+    app.kubernetes.io/name: canario
+    app.kubernetes.io/managed-by: kustomize
+type: kubernetes.io/service-account-token
