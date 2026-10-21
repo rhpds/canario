@@ -2,4 +2,5 @@
 resources:
 - canario_v1alpha1_canariorun.yaml
 - canario_v1alpha1_canarioscore.yaml
+- canario_v1alpha1_canarioschedule.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

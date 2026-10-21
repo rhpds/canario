@@ -43,6 +43,7 @@ rules:
   - canario.rhpds.com
   resources:
   - canarioruns
+  - canarioschedules
   verbs:
   - create
   - delete
@@ -55,12 +56,14 @@ rules:
   - canario.rhpds.com
   resources:
   - canarioruns/finalizers
+  - canarioschedules/finalizers
   verbs:
   - update
 - apiGroups:
   - canario.rhpds.com
   resources:
   - canarioruns/status
+  - canarioschedules/status
   verbs:
   - get
   - patch

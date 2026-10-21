@@ -1,0 +1,235 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: canarioschedules.canario.rhpds.com
+spec:
+  group: canario.rhpds.com
+  names:
+    kind: CanarioSchedule
+    listKind: CanarioScheduleList
+    plural: canarioschedules
+    shortNames:
+    - csched
+    singular: canarioschedule
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .spec.suspend
+      name: Suspend
+      type: boolean
+    - jsonPath: .status.lastRunName
+      name: LastRun
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CanarioSchedule periodically creates CanarioRuns from a template.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CanarioScheduleSpec defines the desired periodic Run creation
+              policy.
+            properties:
+              concurrencyPolicy:
+                default: Forbid
+                description: |-
+                  ConcurrencyPolicy controls overlapping Runs. v1 only supports Forbid
+                  (skip the fire if a previous Run is still active).
+                enum:
+                - Forbid
+                type: string
+              historyLimit:
+                default: 5
+                description: |-
+                  HistoryLimit is how many terminal Runs owned by this Schedule to keep
+                  (newest retained). Default 5.
+                format: int32
+                minimum: 0
+                type: integer
+              schedule:
+                description: |-
+                  Schedule is a standard 5-field cron expression evaluated in UTC
+                  (minute hour dom month dow), e.g. "0 */6 * * *".
+                minLength: 1
+                type: string
+              suspend:
+                description: Suspend stops creating new Runs when true.
+                type: boolean
+              template:
+                description: Template is the CanarioRun spec created on each successful
+                  fire.
+                properties:
+                  spec:
+                    description: Spec is copied onto each created CanarioRun.
+                    properties:
+                      guestImage:
+                        description: |-
+                          GuestImage selects the boot disk (DataSource clone or registry pull).
+                          Optional when the operator is configured with install-time defaults
+                          (CANARIO_DEFAULT_GUEST_*); otherwise required.
+                        properties:
+                          dataSource:
+                            description: DataSource clones a Ready CDI DataSource
+                              in the given namespace.
+                            properties:
+                              name:
+                                description: Name of the DataSource (e.g. fedora,
+                                  rhel9).
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the DataSource (cluster-specific;
+                                  no default).
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - namespace
+                            type: object
+                          registry:
+                            description: Registry pulls via CDI (e.g. docker://quay.io/containerdisks/fedora:40).
+                            type: string
+                        type: object
+                      network:
+                        description: |-
+                          Network configures external ping/DNS/download/git checks. Optional;
+                          defaults from operator ConfigMap / built-in suite defaults.
+                        properties:
+                          dnsName:
+                            description: DNSName is resolved for the DNS check (e.g.
+                              dns.google).
+                            type: string
+                          downloadURL:
+                            description: DownloadURL is fetched for the throughput
+                              check (~1MiB recommended).
+                            type: string
+                          gitURL:
+                            description: GitURL is cloned when the git section runs
+                              (empty skips git).
+                            type: string
+                          mode:
+                            description: Mode is auto (probe internet), on, or off.
+                            enum:
+                            - auto
+                            - "on"
+                            - "off"
+                            type: string
+                          pingTarget:
+                            description: PingTarget is the host for ICMP ping (e.g.
+                              1.1.1.1).
+                            type: string
+                        type: object
+                      profile:
+                        default: small
+                        description: 'Profile selects VM sizing: small (periodic default)
+                          or default (larger).'
+                        enum:
+                        - small
+                        - default
+                        type: string
+                      scoringRef:
+                        description: |-
+                          ScoringRef names a CanarioScore in the same namespace. When set, the
+                          operator applies that policy once the suite finishes. Omit for metrics-only.
+                        type: string
+                      storage:
+                        default: default
+                        description: |-
+                          Storage selects how data disks are chosen: "default" (cluster default SC)
+                          or "list" (explicit storageClasses).
+                        enum:
+                        - default
+                        - list
+                        type: string
+                      storageClasses:
+                        description: |-
+                          StorageClasses is the explicit list of StorageClasses when storage=list
+                          (one guest data disk per entry).
+                        items:
+                          type: string
+                        type: array
+                      suite:
+                        description: Suite selects in-guest bench sections. Optional;
+                          defaults from operator ConfigMap / "all".
+                        properties:
+                          sections:
+                            description: |-
+                              Sections is a comma-separated list or "all"
+                              (storage,fileops,responsive,packages,compile,cpu,memory,network,git).
+                              Empty uses operator default, then "all".
+                            type: string
+                        type: object
+                      type:
+                        default: guest
+                        description: Type selects the canary experiment. "guest" creates
+                          a temporary guest VM.
+                        enum:
+                        - guest
+                        type: string
+                      workers:
+                        default: all
+                        description: 'Workers selects placement: "all", "busiest",
+                          or a worker node name.'
+                        type: string
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - schedule
+            - template
+            type: object
+          status:
+            description: CanarioScheduleStatus is the observed state of a CanarioSchedule.
+            properties:
+              activeRunName:
+                description: ActiveRunName is a non-terminal Run for this Schedule,
+                  if any.
+                type: string
+              lastRunName:
+                description: LastRunName is the name of the last created CanarioRun.
+                type: string
+              lastScheduleTime:
+                description: LastScheduleTime is when the last Run was successfully
+                  created (UTC).
+                format: date-time
+                type: string
+              lastSkipReason:
+                description: LastSkipReason explains the last skip (e.g. previous
+                  run still active).
+                type: string
+              lastSkipTime:
+                description: LastSkipTime is when a fire was last skipped.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

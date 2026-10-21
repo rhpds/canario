@@ -4,6 +4,7 @@
 resources:
 - bases/canario.rhpds.com_canarioruns.yaml
 - bases/canario.rhpds.com_canarioscores.yaml
+- bases/canario.rhpds.com_canarioschedules.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

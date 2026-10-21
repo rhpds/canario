@@ -1,0 +1,19 @@
+apiVersion: canario.rhpds.com/v1alpha1
+kind: CanarioSchedule
+metadata:
+  name: canarioschedule-sample
+spec:
+  # Standard 5-field cron, evaluated in UTC.
+  schedule: "0 */6 * * *"
+  # suspend: true
+  concurrencyPolicy: Forbid
+  historyLimit: 5
+  template:
+    spec:
+      type: guest
+      profile: small
+      workers: all
+      storage: list
+      storageClasses:
+        - ocs-external-storagecluster-ceph-rbd
+      # scoringRef: default
