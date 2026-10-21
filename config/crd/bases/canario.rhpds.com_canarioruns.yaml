@@ -21,6 +21,12 @@ spec:
     - jsonPath: .status.suiteStatus
       name: Suite
       type: string
+    - jsonPath: .status.scores.total
+      name: Score
+      type: integer
+    - jsonPath: .status.scores.verdict
+      name: Verdict
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -112,6 +118,11 @@ spec:
                 - small
                 - default
                 type: string
+              scoringRef:
+                description: |-
+                  ScoringRef names a CanarioScore in the same namespace. When set, the
+                  operator applies that policy once the suite finishes. Omit for metrics-only.
+                type: string
               storage:
                 default: default
                 description: |-
@@ -166,6 +177,25 @@ spec:
                 description: Phase is Pending, Running, Succeeded, or Failed (aggregate
                   over workers).
                 type: string
+              scores:
+                description: Scores is the run rollup (worst worker) when scoringRef
+                  was set.
+                properties:
+                  scoringRef:
+                    description: ScoringRef is the CanarioScore name applied.
+                    type: string
+                  total:
+                    description: Total is max(worker totals) — worst worker (0 = best;
+                      always set when scored).
+                    format: int32
+                    type: integer
+                  verdict:
+                    description: Verdict is from CanarioScore verdict bands (e.g.
+                      good, fair).
+                    type: string
+                required:
+                - total
+                type: object
               suiteStatus:
                 description: SuiteStatus is the overall suite status (running|succeeded|failed).
                 type: string
@@ -274,6 +304,55 @@ spec:
                       description: Phase is Pending, Running, Succeeded, or Failed
                         for this worker.
                       type: string
+                    scores:
+                      description: Scores is filled when the Run has scoringRef and
+                        scoring completed.
+                      properties:
+                        disks:
+                          description: Disks are per-SC storage points (optional detail).
+                          items:
+                            description: DiskScore is per-StorageClass storage module
+                              points on a worker.
+                            properties:
+                              storage:
+                                description: Storage is points for the storage module
+                                  on this disk (0 = best; always set when scored).
+                                format: int32
+                                type: integer
+                              storageClass:
+                                type: string
+                              tier:
+                                type: string
+                            required:
+                            - storage
+                            type: object
+                          type: array
+                        fileops:
+                          format: int32
+                          type: integer
+                        network:
+                          format: int32
+                          type: integer
+                        packages:
+                          format: int32
+                          type: integer
+                        responsive:
+                          format: int32
+                          type: integer
+                        storage:
+                          format: int32
+                          type: integer
+                        total:
+                          format: int32
+                          type: integer
+                      required:
+                      - fileops
+                      - network
+                      - packages
+                      - responsive
+                      - storage
+                      - total
+                      type: object
                     suiteStatus:
                       description: SuiteStatus is the in-guest suite status (running|succeeded|failed).
                       type: string

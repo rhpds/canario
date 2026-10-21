@@ -66,6 +66,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - canario.rhpds.com
+  resources:
+  - canarioscores
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cdi.kubevirt.io
   resources:
   - datasources

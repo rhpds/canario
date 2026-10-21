@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/canario.rhpds.com_canarioruns.yaml
+- bases/canario.rhpds.com_canarioscores.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

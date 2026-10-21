@@ -1,0 +1,313 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: canarioscores.canario.rhpds.com
+spec:
+  group: canario.rhpds.com
+  names:
+    kind: CanarioScore
+    listKind: CanarioScoreList
+    plural: canarioscores
+    shortNames:
+    - cscore
+    singular: canarioscore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CanarioScore is a reusable scoring policy for CanarioRuns.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CanarioScoreSpec defines scoring brackets for suite modules.
+            properties:
+              modules:
+                description: Modules holds per-module bands. Omitted modules contribute
+                  0.
+                properties:
+                  fileops:
+                    description: FileopsBands scores filesystem metadata ops.
+                    properties:
+                      create1000Ms:
+                        description: Create1000Ms bands for creating 1000 files.
+                        items:
+                          description: |-
+                            UpperBoundBand awards Points when value < Max (or Max omitted = +Inf).
+                            Evaluate bands in ascending Max order; first match wins.
+                          properties:
+                            max:
+                              description: Max is an exclusive upper bound. Omit for
+                                the catch-all (+Inf).
+                              format: int64
+                              type: integer
+                            points:
+                              description: Points added when this band matches (lower
+                                total is better).
+                              format: int32
+                              type: integer
+                          required:
+                          - points
+                          type: object
+                        type: array
+                    type: object
+                  network:
+                    description: NetworkBands scores soft external checks.
+                    properties:
+                      downloadFailedPoints:
+                        default: 2
+                        description: DownloadFailedPoints when download status is
+                          failed.
+                        format: int32
+                        type: integer
+                      downloadMbps:
+                        description: DownloadMbps bands (higher is better) when download
+                          succeeded.
+                        items:
+                          description: |-
+                            LowerBoundBand awards Points when value >= Min (higher-is-better metrics).
+                            Evaluate bands in descending Min order; first match wins.
+                            Min units depend on the field (MiB/s, IOPS, or Mbps) — use whole numbers.
+                          properties:
+                            min:
+                              description: Min is an inclusive lower bound. Omit for
+                                the catch-all (-Inf).
+                              format: int64
+                              type: integer
+                            points:
+                              description: Points added when this band matches.
+                              format: int32
+                              type: integer
+                          required:
+                          - points
+                          type: object
+                        type: array
+                      failedCheckPoints:
+                        default: 1
+                        description: FailedCheckPoints added per failed ping/dns/download/git
+                          (when not skipped).
+                        format: int32
+                        type: integer
+                    type: object
+                  packages:
+                    description: PackagesBands scores package install.
+                    properties:
+                      dnfInstallMs:
+                        description: DnfInstallMs bands for dnf install duration.
+                        items:
+                          description: |-
+                            UpperBoundBand awards Points when value < Max (or Max omitted = +Inf).
+                            Evaluate bands in ascending Max order; first match wins.
+                          properties:
+                            max:
+                              description: Max is an exclusive upper bound. Omit for
+                                the catch-all (+Inf).
+                              format: int64
+                              type: integer
+                            points:
+                              description: Points added when this band matches (lower
+                                total is better).
+                              format: int32
+                              type: integer
+                          required:
+                          - points
+                          type: object
+                        type: array
+                    type: object
+                  responsive:
+                    description: ResponsiveBands scores guest interactive / cmd timings
+                      (ms).
+                    properties:
+                      cmdLsEtcMs:
+                        description: CmdLsEtcMs bands for ls -laR /etc (stand-in for
+                          interactive feel).
+                        items:
+                          description: |-
+                            UpperBoundBand awards Points when value < Max (or Max omitted = +Inf).
+                            Evaluate bands in ascending Max order; first match wins.
+                          properties:
+                            max:
+                              description: Max is an exclusive upper bound. Omit for
+                                the catch-all (+Inf).
+                              format: int64
+                              type: integer
+                            points:
+                              description: Points added when this band matches (lower
+                                total is better).
+                              format: int32
+                              type: integer
+                          required:
+                          - points
+                          type: object
+                        type: array
+                    type: object
+                  storage:
+                    description: StorageBands scores disks by tier.
+                    properties:
+                      defaultTier:
+                        default: remote
+                        description: DefaultTier used when a StorageClass is not listed
+                          in storageClassTiers.
+                        enum:
+                        - local
+                        - remote
+                        - object
+                        type: string
+                      storageClassTiers:
+                        additionalProperties:
+                          type: string
+                        description: StorageClassTiers maps StorageClass name → tier
+                          id (local|remote|object).
+                        type: object
+                      tiers:
+                        additionalProperties:
+                          description: StorageTierBands holds fio bands for one storage
+                            tier (local|remote|object).
+                          properties:
+                            fioRandReadIOPS:
+                              description: FioRandReadIOPS — random read IOPS (higher
+                                better).
+                              items:
+                                description: |-
+                                  LowerBoundBand awards Points when value >= Min (higher-is-better metrics).
+                                  Evaluate bands in descending Min order; first match wins.
+                                  Min units depend on the field (MiB/s, IOPS, or Mbps) — use whole numbers.
+                                properties:
+                                  min:
+                                    description: Min is an inclusive lower bound.
+                                      Omit for the catch-all (-Inf).
+                                    format: int64
+                                    type: integer
+                                  points:
+                                    description: Points added when this band matches.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - points
+                                type: object
+                              type: array
+                            fioRandWriteIOPS:
+                              description: FioRandWriteIOPS — random write IOPS (higher
+                                better).
+                              items:
+                                description: |-
+                                  LowerBoundBand awards Points when value >= Min (higher-is-better metrics).
+                                  Evaluate bands in descending Min order; first match wins.
+                                  Min units depend on the field (MiB/s, IOPS, or Mbps) — use whole numbers.
+                                properties:
+                                  min:
+                                    description: Min is an inclusive lower bound.
+                                      Omit for the catch-all (-Inf).
+                                    format: int64
+                                    type: integer
+                                  points:
+                                    description: Points added when this band matches.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - points
+                                type: object
+                              type: array
+                            fioSeqReadMBps:
+                              description: FioSeqReadMBps — sequential read MiB/s
+                                (higher better).
+                              items:
+                                description: |-
+                                  LowerBoundBand awards Points when value >= Min (higher-is-better metrics).
+                                  Evaluate bands in descending Min order; first match wins.
+                                  Min units depend on the field (MiB/s, IOPS, or Mbps) — use whole numbers.
+                                properties:
+                                  min:
+                                    description: Min is an inclusive lower bound.
+                                      Omit for the catch-all (-Inf).
+                                    format: int64
+                                    type: integer
+                                  points:
+                                    description: Points added when this band matches.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - points
+                                type: object
+                              type: array
+                            fioSeqWriteMBps:
+                              description: FioSeqWriteMBps — sequential write MiB/s
+                                (higher better).
+                              items:
+                                description: |-
+                                  LowerBoundBand awards Points when value >= Min (higher-is-better metrics).
+                                  Evaluate bands in descending Min order; first match wins.
+                                  Min units depend on the field (MiB/s, IOPS, or Mbps) — use whole numbers.
+                                properties:
+                                  min:
+                                    description: Min is an inclusive lower bound.
+                                      Omit for the catch-all (-Inf).
+                                    format: int64
+                                    type: integer
+                                  points:
+                                    description: Points added when this band matches.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - points
+                                type: object
+                              type: array
+                          type: object
+                        description: 'Tiers holds per-tier fio bands. Keys: local,
+                          remote, object.'
+                        type: object
+                    type: object
+                type: object
+              verdicts:
+                description: Verdicts maps total points → verdict name (lower total
+                  is better).
+                items:
+                  description: |-
+                    VerdictBand maps a total score range to a verdict string.
+                    First band where total <= Max matches (ascending Max); omit Max for catch-all.
+                  properties:
+                    max:
+                      description: Max inclusive total for this verdict. Omit for
+                        +Inf.
+                      format: int32
+                      type: integer
+                    name:
+                      description: Name of the verdict (e.g. excellent, good, fair,
+                        below-average, poor).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+            type: object
+          status:
+            description: CanarioScoreStatus is unused in v1 (policy object).
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

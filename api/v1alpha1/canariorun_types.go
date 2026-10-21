@@ -140,6 +140,43 @@ type CanarioRunSpec struct {
 	// defaults from operator ConfigMap / built-in suite defaults.
 	// +optional
 	Network *NetworkSpec `json:"network,omitempty"`
+
+	// ScoringRef names a CanarioScore in the same namespace. When set, the
+	// operator applies that policy once the suite finishes. Omit for metrics-only.
+	// +optional
+	ScoringRef string `json:"scoringRef,omitempty"`
+}
+
+// DiskScore is per-StorageClass storage module points on a worker.
+type DiskScore struct {
+	StorageClass string `json:"storageClass,omitempty"`
+	Tier         string `json:"tier,omitempty"`
+	// Storage is points for the storage module on this disk (0 = best; always set when scored).
+	Storage int32 `json:"storage"`
+}
+
+// WorkerScores holds modular points for one worker (lower is better).
+// Point fields omit omitempty so a graded 0 still appears in status JSON.
+type WorkerScores struct {
+	Total      int32 `json:"total"`
+	Responsive int32 `json:"responsive"`
+	Packages   int32 `json:"packages"`
+	Fileops    int32 `json:"fileops"`
+	Storage    int32 `json:"storage"` // worst disk
+	Network    int32 `json:"network"`
+	// Disks are per-SC storage points (optional detail).
+	// +optional
+	Disks []DiskScore `json:"disks,omitempty"`
+}
+
+// RunScores is the run-level rollup (worst worker) plus policy snapshot.
+type RunScores struct {
+	// ScoringRef is the CanarioScore name applied.
+	ScoringRef string `json:"scoringRef,omitempty"`
+	// Total is max(worker totals) — worst worker (0 = best; always set when scored).
+	Total int32 `json:"total"`
+	// Verdict is from CanarioScore verdict bands (e.g. good, fair).
+	Verdict string `json:"verdict,omitempty"`
 }
 
 // DiskResult holds suite metrics for one attached data disk / StorageClass
@@ -211,6 +248,10 @@ type WorkerResult struct {
 	// Disks are per-StorageClass suite results on this worker.
 	// +optional
 	Disks []DiskResult `json:"disks,omitempty"`
+
+	// Scores is filled when the Run has scoringRef and scoring completed.
+	// +optional
+	Scores *WorkerScores `json:"scores,omitempty"`
 }
 
 // CanarioRunStatus is the observed state of a CanarioRun.
@@ -228,6 +269,10 @@ type CanarioRunStatus struct {
 	// +optional
 	Workers []WorkerResult `json:"workers,omitempty"`
 
+	// Scores is the run rollup (worst worker) when scoringRef was set.
+	// +optional
+	Scores *RunScores `json:"scores,omitempty"`
+
 	// CompletionTime is when the experiment finished (UTC).
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
@@ -237,6 +282,8 @@ type CanarioRunStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Suite",type=string,JSONPath=`.status.suiteStatus`
+// +kubebuilder:printcolumn:name="Score",type=integer,JSONPath=`.status.scores.total`
+// +kubebuilder:printcolumn:name="Verdict",type=string,JSONPath=`.status.scores.verdict`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CanarioRun is a one-shot guest canary experiment.

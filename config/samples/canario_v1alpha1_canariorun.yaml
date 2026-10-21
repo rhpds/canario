@@ -24,3 +24,5 @@ spec:
   #   dnsName: dns.google
   #   downloadURL: http://speedtest.tele2.net/1MB.zip
   #   gitURL: https://github.com/yordangit/ocp-virt-ux-bench.git
+  # Optional — apply CanarioScore when the suite finishes:
+  # scoringRef: default

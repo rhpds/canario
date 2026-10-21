@@ -33,6 +33,7 @@ import (
 
 	canariov1alpha1 "github.com/rhpds/canario/api/v1alpha1"
 	canariometrics "github.com/rhpds/canario/internal/metrics"
+	"github.com/rhpds/canario/internal/scoring"
 )
 
 const (
@@ -69,6 +70,7 @@ type CanarioRunReconciler struct {
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=canario.rhpds.com,resources=canarioscores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;watch;create;update;patch;delete
@@ -121,6 +123,11 @@ func (r *CanarioRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if isTerminal(run.Status.Phase) {
+		if run.Spec.ScoringRef != "" && run.Status.Scores == nil {
+			if err := r.scoreRun(ctx, run); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		canariometrics.RecordRun(run)
 		return ctrl.Result{}, nil
 	}
@@ -335,11 +342,17 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 		completion = &now
 	}
 
+	workers, runScores, err := r.scoreWorkers(ctx, run, workers)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 		s.Phase = phase
 		s.SuiteStatus = suite
 		s.Message = msg
 		s.Workers = workers
+		s.Scores = runScores
 		s.CompletionTime = completion
 	}); err != nil {
 		return ctrl.Result{}, err
@@ -352,6 +365,32 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 	}
 	log.Info("experiment finished; CioVMs deleted", "phase", phase, "workers", len(workers))
 	return ctrl.Result{}, nil
+}
+
+// scoreWorkers applies CanarioScore when scoringRef is set. No-op if unset.
+func (r *CanarioRunReconciler) scoreWorkers(ctx context.Context, run *canariov1alpha1.CanarioRun, workers []canariov1alpha1.WorkerResult) ([]canariov1alpha1.WorkerResult, *canariov1alpha1.RunScores, error) {
+	if run.Spec.ScoringRef == "" {
+		return workers, nil, nil
+	}
+	policy := &canariov1alpha1.CanarioScore{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: run.Spec.ScoringRef}, policy); err != nil {
+		return workers, nil, fmt.Errorf("get CanarioScore %q: %w", run.Spec.ScoringRef, err)
+	}
+	tmp := run.DeepCopy()
+	tmp.Status.Workers = workers
+	rs := scoring.Apply(policy, tmp)
+	return tmp.Status.Workers, rs, nil
+}
+
+func (r *CanarioRunReconciler) scoreRun(ctx context.Context, run *canariov1alpha1.CanarioRun) error {
+	workers, rs, err := r.scoreWorkers(ctx, run, run.Status.Workers)
+	if err != nil {
+		return err
+	}
+	return r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
+		s.Workers = workers
+		s.Scores = rs
+	})
 }
 
 func workerByNode(workers []canariov1alpha1.WorkerResult) map[string]canariov1alpha1.WorkerResult {
@@ -477,20 +516,27 @@ func (r *CanarioRunReconciler) collectSingleAndCleanup(ctx context.Context, run 
 		}
 	}
 
+	workers := []canariov1alpha1.WorkerResult{{
+		NodeName:    nodeName,
+		CioVMName:   vmName,
+		Phase:       workerPhase,
+		SuiteStatus: suite,
+		Message:     msg,
+		Guest:       snap.Guest,
+		Disks:       snap.Disks,
+	}}
+	workers, runScores, err := r.scoreWorkers(ctx, run, workers)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if err := r.patchStatus(ctx, run, func(s *canariov1alpha1.CanarioRunStatus) {
 		s.Phase = phase
 		s.Message = msg
 		s.SuiteStatus = suite
 		s.CompletionTime = &completed
-		s.Workers = []canariov1alpha1.WorkerResult{{
-			NodeName:    nodeName,
-			CioVMName:   vmName,
-			Phase:       workerPhase,
-			SuiteStatus: suite,
-			Message:     msg,
-			Guest:       snap.Guest,
-			Disks:       snap.Disks,
-		}}
+		s.Workers = workers
+		s.Scores = runScores
 	}); err != nil {
 		return ctrl.Result{}, err
 	}

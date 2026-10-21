@@ -1,0 +1,86 @@
+apiVersion: canario.rhpds.com/v1alpha1
+kind: CanarioScore
+metadata:
+  name: default
+  namespace: canario-operator
+spec:
+  # Lower total points = better. Tune bands per environment.
+  modules:
+    responsive:
+      cmdLsEtcMs:
+        - max: 100
+          points: 0
+        - max: 200
+          points: 1
+        - max: 400
+          points: 2
+        - points: 3
+    packages:
+      dnfInstallMs:
+        - max: 3500
+          points: 0
+        - max: 5000
+          points: 1
+        - max: 6500
+          points: 2
+        - points: 3
+    fileops:
+      create1000Ms:
+        - max: 250
+          points: 0
+        - max: 320
+          points: 1
+        - points: 2
+    network:
+      failedCheckPoints: 1
+      downloadFailedPoints: 2
+      downloadMbps:
+        - min: 10
+          points: 0
+        - min: 3
+          points: 1
+        - points: 2
+    storage:
+      defaultTier: remote
+      storageClassTiers:
+        # Examples — adjust to your cluster StorageClass names.
+        hostpath-csi: local
+        # ocs-external-storagecluster-ceph-rbd: remote
+      tiers:
+        local:
+          fioSeqWriteMBps:
+            - min: 400
+              points: 0
+            - min: 150
+              points: 1
+            - points: 3
+          fioRandReadIOPS:
+            - min: 8000
+              points: 0
+            - min: 3000
+              points: 1
+            - points: 3
+        remote:
+          fioSeqWriteMBps:
+            - min: 200
+              points: 0
+            - min: 80
+              points: 1
+            - points: 3
+          fioRandReadIOPS:
+            - min: 4000
+              points: 0
+            - min: 1500
+              points: 1
+            - points: 3
+        object: {}
+  verdicts:
+    - max: 1
+      name: excellent
+    - max: 3
+      name: good
+    - max: 5
+      name: fair
+    - max: 7
+      name: below-average
+    - name: poor
