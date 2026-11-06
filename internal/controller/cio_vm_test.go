@@ -81,6 +81,20 @@ var _ = Describe("CioVM helpers", func() {
 			},
 		}
 		Expect(isWorkerNode(hc)).To(BeTrue())
+
+		// Ceph role → skip. Infra alone → keep.
+		Expect(isWorkerNode(&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "ceph-1",
+				Labels: map[string]string{"node-role.kubernetes.io/ceph": ""},
+			},
+		})).To(BeFalse())
+		Expect(isWorkerNode(&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "infra-1",
+				Labels: map[string]string{"node-role.kubernetes.io/infra": ""},
+			},
+		})).To(BeTrue())
 	})
 
 	It("aggregates multi-worker terminal phases", func() {

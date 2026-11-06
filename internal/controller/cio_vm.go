@@ -580,9 +580,11 @@ func staggerWait(byNode map[string]*unstructured.Unstructured, now time.Time) ti
 // taint means we cannot deploy there (dedicated ODF storage/infra, cordon
 // pressure taints, control-plane, etc.).
 //
-// Hyperconverged "storage + worker" nodes are kept when they only carry storage
-// labels (e.g. cluster.ocs.openshift.io/openshift-storage) and are not tainted
-// — those are real compute workers. Explicit Spec.Workers=<node> bypasses this.
+// Nodes with node-role.kubernetes.io/ceph are skipped (even if untainted): they
+// are storage-oriented and CioVMs pinned there typically hit ErrorUnschedulable.
+// Infra alone is not a skip reason. Hyperconverged "storage + worker" nodes that
+// only carry cluster.ocs.openshift.io/openshift-storage (no ceph role) and are
+// not tainted remain eligible. Explicit Spec.Workers=<node> bypasses this.
 func isWorkerNode(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
 		return false
@@ -591,6 +593,9 @@ func isWorkerNode(node *corev1.Node) bool {
 		return false
 	}
 	if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
+		return false
+	}
+	if _, ok := node.Labels["node-role.kubernetes.io/ceph"]; ok {
 		return false
 	}
 	for _, t := range node.Spec.Taints {
