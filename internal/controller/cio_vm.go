@@ -518,7 +518,7 @@ func observeCioVM(vm *unstructured.Unstructured) cioVMStatus {
 		}
 	}
 	printable, _, _ := unstructured.NestedString(vm.Object, "status", "printableStatus")
-	if printable == "ErrorUnschedulable" || printable == "CrashLoopBackOff" || printable == "ErrImagePull" {
+	if printable == "ErrorUnschedulable" || printable == "CrashLoopBackOff" || printable == "ErrImagePull" || printable == "DataVolumeError" {
 		return cioVMStatus{Phase: cioVMPhaseFailed, Message: "CioVM failed: " + printable, Name: name, NodeName: node}
 	}
 	if printable != "" {

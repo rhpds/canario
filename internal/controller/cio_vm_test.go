@@ -190,6 +190,13 @@ var _ = Describe("CioVM helpers", func() {
 		}}
 		Expect(observeCioVM(failed).Phase).To(Equal(cioVMPhaseFailed))
 
+		dvErr := &unstructured.Unstructured{Object: map[string]interface{}{
+			"status": map[string]interface{}{"printableStatus": "DataVolumeError"},
+		}}
+		stDV := observeCioVM(dvErr)
+		Expect(stDV.Phase).To(Equal(cioVMPhaseFailed))
+		Expect(stDV.Message).To(ContainSubstring("DataVolumeError"))
+
 		pending := &unstructured.Unstructured{Object: map[string]interface{}{
 			"status": map[string]interface{}{"printableStatus": "Starting"},
 		}}
