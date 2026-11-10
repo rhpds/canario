@@ -149,6 +149,12 @@ spec:
                       (storage,fileops,responsive,packages,compile,cpu,memory,network,git).
                       Empty uses operator default, then "all".
                     type: string
+                  timeout:
+                    description: |-
+                      Timeout is the per-worker deadline (Go duration, e.g. "30m") from first
+                      CioVM observation until suite completion. Covers never-Ready and
+                      never-finished suite. Empty uses CANARIO_WORKER_SUITE_TIMEOUT, then 30m.
+                    type: string
                 type: object
               type:
                 default: guest
@@ -174,8 +180,9 @@ spec:
                 description: Message is a human-readable detail for the current phase.
                 type: string
               phase:
-                description: Phase is Pending, Running, Succeeded, or Failed (aggregate
-                  over workers).
+                description: |-
+                  Phase is Pending, Running, Succeeded, Failed, or Degraded (aggregate over workers).
+                  Degraded: mix of Succeeded and Failed workers (terminal).
                 type: string
               scores:
                 description: Scores is the run rollup (worst worker) when scoringRef
@@ -301,8 +308,9 @@ spec:
                       description: NodeName is the worker node.
                       type: string
                     phase:
-                      description: Phase is Pending, Running, Succeeded, or Failed
-                        for this worker.
+                      description: |-
+                        Phase is Pending, Running, Succeeded, or Failed for this worker.
+                        (Workers are not Degraded — that is a Run-level aggregate only.)
                       type: string
                     scores:
                       description: Scores is filled when the Run has scoringRef and
@@ -353,6 +361,12 @@ spec:
                       - storage
                       - total
                       type: object
+                    suiteStartedTime:
+                      description: |-
+                        SuiteStartedTime is when the per-worker timeout clock started (first
+                        CioVM observation). Used with spec.suite.timeout / operator default.
+                      format: date-time
+                      type: string
                     suiteStatus:
                       description: SuiteStatus is the in-guest suite status (running|succeeded|failed).
                       type: string

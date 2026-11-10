@@ -27,3 +27,4 @@ data:
   CANARIO_DEFAULT_DNS_NAME: "dns.google"
   CANARIO_DEFAULT_DOWNLOAD_URL: "http://speedtest.tele2.net/1MB.zip"
   CANARIO_DEFAULT_GIT_URL: ""
+  CANARIO_WORKER_SUITE_TIMEOUT: "30m"

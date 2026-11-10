@@ -240,7 +240,10 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 	workers := make([]canariov1alpha1.WorkerResult, 0, len(targets))
 	allTerminal := true
 	anyFailed := false
+	anySucceeded := false
 	var completion *metav1.Time
+	suiteTimeout := resolveSuiteConfig(run, r.SuiteDefaults).WorkerSuiteTimeout
+	now := time.Now()
 
 	for _, node := range targets {
 		wr := prevByNode[node]
@@ -250,6 +253,9 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 			workers = append(workers, wr)
 			if wr.Phase == canariov1alpha1.PhaseFailed {
 				anyFailed = true
+			}
+			if wr.Phase == canariov1alpha1.PhaseSucceeded {
+				anySucceeded = true
 			}
 			continue
 		}
@@ -265,6 +271,23 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 
 		obs := observeCioVM(vm)
 		wr.CioVMName = obs.Name
+		ensureWorkerSuiteStarted(&wr, now)
+
+		if obs.Phase != cioVMPhaseFailed {
+			if timedOut, msg := workerSuiteTimedOut(wr, obs, suiteTimeout, now); timedOut {
+				if obs.Phase == cioVMPhaseReady {
+					if _, _, _, err := r.collectWorkerSuite(ctx, run.Namespace, obs.Name, node); err != nil {
+						msg = "suite timeout (guest agent unreachable)"
+					}
+				}
+				wr.Phase = canariov1alpha1.PhaseFailed
+				wr.SuiteStatus = "failed"
+				wr.Message = msg
+				anyFailed = true
+				workers = append(workers, wr)
+				continue
+			}
+		}
 
 		switch obs.Phase {
 		case cioVMPhaseFailed:
@@ -329,14 +352,15 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
-	phase := canariov1alpha1.PhaseSucceeded
-	suite := "succeeded"
-	msg := "all workers succeeded; cleaned up CioVMs"
-	if anyFailed {
-		phase = canariov1alpha1.PhaseFailed
-		suite = "failed"
-		msg = "one or more workers failed; cleaned up CioVMs"
+	for _, wr := range workers {
+		if wr.Phase == canariov1alpha1.PhaseFailed {
+			anyFailed = true
+		}
+		if wr.Phase == canariov1alpha1.PhaseSucceeded {
+			anySucceeded = true
+		}
 	}
+	phase, suite, msg := aggregateRunOutcome(anySucceeded, anyFailed)
 	if completion == nil {
 		now := metav1.Now()
 		completion = &now
@@ -365,6 +389,18 @@ func (r *CanarioRunReconciler) reconcileWorkers(ctx context.Context, run *canari
 	}
 	log.Info("experiment finished; CioVMs deleted", "phase", phase, "workers", len(workers))
 	return ctrl.Result{}, nil
+}
+
+// aggregateRunOutcome maps worker outcomes to Run phase / suiteStatus / message.
+func aggregateRunOutcome(anySucceeded, anyFailed bool) (phase, suite, msg string) {
+	switch {
+	case anyFailed && anySucceeded:
+		return canariov1alpha1.PhaseDegraded, "degraded", "some workers failed; cleaned up CioVMs"
+	case anyFailed:
+		return canariov1alpha1.PhaseFailed, "failed", "all workers failed; cleaned up CioVMs"
+	default:
+		return canariov1alpha1.PhaseSucceeded, "succeeded", "all workers succeeded; cleaned up CioVMs"
+	}
 }
 
 // scoreWorkers applies CanarioScore when scoringRef is set. No-op if unset.
@@ -564,7 +600,36 @@ func (r *CanarioRunReconciler) patchStatus(ctx context.Context, run *canariov1al
 }
 
 func isTerminal(phase string) bool {
-	return phase == canariov1alpha1.PhaseSucceeded || phase == canariov1alpha1.PhaseFailed
+	return phase == canariov1alpha1.PhaseSucceeded ||
+		phase == canariov1alpha1.PhaseFailed ||
+		phase == canariov1alpha1.PhaseDegraded
+}
+
+func ensureWorkerSuiteStarted(wr *canariov1alpha1.WorkerResult, now time.Time) {
+	if wr.SuiteStartedTime != nil {
+		return
+	}
+	t := metav1.NewTime(now)
+	wr.SuiteStartedTime = &t
+}
+
+// workerSuiteTimedOut reports whether the per-worker deadline elapsed.
+// Call only when the CioVM is not already in an observe-failed phase.
+func workerSuiteTimedOut(wr canariov1alpha1.WorkerResult, obs cioVMStatus, timeout time.Duration, now time.Time) (bool, string) {
+	if timeout <= 0 || wr.SuiteStartedTime == nil {
+		return false, ""
+	}
+	if now.Before(wr.SuiteStartedTime.Time.Add(timeout)) {
+		return false, ""
+	}
+	if obs.Phase == cioVMPhaseReady {
+		return true, "suite timeout"
+	}
+	msg := "CioVM not ready before timeout"
+	if obs.Message != "" {
+		msg = msg + ": " + obs.Message
+	}
+	return true, msg
 }
 
 // SetupWithManager registers this controller with the manager.

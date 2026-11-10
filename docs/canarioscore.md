@@ -11,6 +11,7 @@ Scores live on **Run status only**. They are intentionally **not** Prometheus me
 - **Lower total points = better** (ux-bench style).
 - Modules contribute independently; omitted modules are skipped.
 - Per-worker totals → Run rollup = **worst worker** (`max` of worker totals).
+- A **Failed** worker with no suite metrics gets worst-band points for enabled modules (so a dead node drives the rollup, not a fake 0).
 - Graded zeros are written explicitly in JSON (`fileops: 0`, etc.).
 
 ### Band types

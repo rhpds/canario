@@ -95,8 +95,92 @@ func scoreWorker(spec *canariov1alpha1.CanarioScoreSpec, w *canariov1alpha1.Work
 		out.Network = scoreNetwork(mods.Network, w.Guest)
 	}
 
+	// Failed workers with no suite data must not look "excellent" (0): apply
+	// worst-band points for modules that would have run. Worst-worker rollup
+	// then reflects a node that should have worked but did not.
+	if w.Phase == canariov1alpha1.PhaseFailed {
+		penalizeMissingFailedWorker(out, mods, w)
+	}
+
 	out.Total = out.Responsive + out.Packages + out.Fileops + out.Storage + out.Network
 	return out
+}
+
+func penalizeMissingFailedWorker(out *canariov1alpha1.WorkerScores, mods canariov1alpha1.ScoreModules, w *canariov1alpha1.WorkerResult) {
+	if out == nil || w == nil {
+		return
+	}
+	if mods.Responsive != nil && w.Guest == nil {
+		out.Responsive = worstUpperPoints(mods.Responsive.CmdLsEtcMs)
+	}
+	if mods.Packages != nil && w.Guest == nil {
+		out.Packages = worstUpperPoints(mods.Packages.DnfInstallMs)
+	}
+	if len(w.Disks) == 0 {
+		if mods.Fileops != nil {
+			out.Fileops = worstUpperPoints(mods.Fileops.Create1000Ms)
+		}
+		if mods.Storage != nil {
+			out.Storage = worstStoragePoints(mods.Storage)
+		}
+	}
+	if mods.Network != nil && w.Guest == nil {
+		out.Network = worstNetworkPoints(mods.Network)
+	}
+}
+
+func worstUpperPoints(bands []canariov1alpha1.UpperBoundBand) int32 {
+	var max int32
+	for _, b := range bands {
+		if b.Points > max {
+			max = b.Points
+		}
+	}
+	return max
+}
+
+func worstLowerPoints(bands []canariov1alpha1.LowerBoundBand) int32 {
+	var max int32
+	for _, b := range bands {
+		if b.Points > max {
+			max = b.Points
+		}
+	}
+	return max
+}
+
+func worstStoragePoints(st *canariov1alpha1.StorageBands) int32 {
+	if st == nil {
+		return 0
+	}
+	tier := st.DefaultTier
+	if tier == "" {
+		tier = canariov1alpha1.StorageTierRemote
+	}
+	bands, ok := st.Tiers[tier]
+	if !ok {
+		return 0
+	}
+	return worstLowerPoints(bands.FioSeqWriteMBps) +
+		worstLowerPoints(bands.FioSeqReadMBps) +
+		worstLowerPoints(bands.FioRandReadIOPS) +
+		worstLowerPoints(bands.FioRandWriteIOPS)
+}
+
+func worstNetworkPoints(nb *canariov1alpha1.NetworkBands) int32 {
+	if nb == nil {
+		return 0
+	}
+	failPts := nb.FailedCheckPoints
+	if failPts == 0 {
+		failPts = 1
+	}
+	dlFail := nb.DownloadFailedPoints
+	if dlFail == 0 {
+		dlFail = 2
+	}
+	// ping + dns + git failed + download failed
+	return failPts*3 + dlFail
 }
 
 func resolveTier(st *canariov1alpha1.StorageBands, sc string) string {

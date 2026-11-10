@@ -40,6 +40,8 @@ const (
 	PhaseRunning   = "Running"
 	PhaseSucceeded = "Succeeded"
 	PhaseFailed    = "Failed"
+	// PhaseDegraded is terminal: at least one worker Succeeded and at least one Failed.
+	PhaseDegraded = "Degraded"
 )
 
 // GuestDataSourceRef selects a CDI DataSource (golden image PVC) by name and namespace.
@@ -72,6 +74,12 @@ type SuiteSpec struct {
 	// Empty uses operator default, then "all".
 	// +optional
 	Sections string `json:"sections,omitempty"`
+
+	// Timeout is the per-worker deadline (Go duration, e.g. "30m") from first
+	// CioVM observation until suite completion. Covers never-Ready and
+	// never-finished suite. Empty uses CANARIO_WORKER_SUITE_TIMEOUT, then 30m.
+	// +optional
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // NetworkSpec configures external network / git checks inside the guest.
@@ -233,10 +241,16 @@ type WorkerResult struct {
 	CioVMName string `json:"cioVMName,omitempty"`
 
 	// Phase is Pending, Running, Succeeded, or Failed for this worker.
+	// (Workers are not Degraded — that is a Run-level aggregate only.)
 	Phase string `json:"phase,omitempty"`
 
 	// SuiteStatus is the in-guest suite status (running|succeeded|failed).
 	SuiteStatus string `json:"suiteStatus,omitempty"`
+
+	// SuiteStartedTime is when the per-worker timeout clock started (first
+	// CioVM observation). Used with spec.suite.timeout / operator default.
+	// +optional
+	SuiteStartedTime *metav1.Time `json:"suiteStartedTime,omitempty"`
 
 	// Message is a human-readable detail for this worker.
 	Message string `json:"message,omitempty"`
@@ -256,7 +270,8 @@ type WorkerResult struct {
 
 // CanarioRunStatus is the observed state of a CanarioRun.
 type CanarioRunStatus struct {
-	// Phase is Pending, Running, Succeeded, or Failed (aggregate over workers).
+	// Phase is Pending, Running, Succeeded, Failed, or Degraded (aggregate over workers).
+	// Degraded: mix of Succeeded and Failed workers (terminal).
 	Phase string `json:"phase,omitempty"`
 
 	// Message is a human-readable detail for the current phase.

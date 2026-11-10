@@ -17,10 +17,15 @@ API: `canario.rhpds.com/v1alpha1` · Kind: `CanarioRun`
 | `storage` | `default` | `default` (cluster default SC) \| `list` |
 | `storageClasses` | — | Required for meaningful `storage: list` (one data disk per SC) |
 | `suite.sections` | operator / `all` | Comma list or `all` |
+| `suite.timeout` | operator / `30m` | Per-worker deadline (Go duration). Covers never-Ready and unfinished suite. Operator env: `CANARIO_WORKER_SUITE_TIMEOUT` |
 | `network.*` | operator defaults | `mode` `auto`\|`on`\|`off`; ping/DNS/download/git |
 | `scoringRef` | — | Name of a same-namespace `CanarioScore`. Omit = no grading |
 
 Suite sections include: storage, fileops, responsive, packages, compile, cpu, memory, network, git.
+
+If a worker exceeds `suite.timeout` after its CioVM is first observed, that worker is **Failed** (`CioVM not ready before timeout` or `suite timeout`).
+
+Run phase when all workers are terminal: all Succeeded → `Succeeded`; all Failed → `Failed`; mix → `Degraded` (terminal; Schedule may fire again). Scoring remains **worst worker** (a Failed worker with no suite data gets worst-band points so it drives the rollup).
 
 ## Lifecycle
 
@@ -31,7 +36,7 @@ Suite sections include: storage, fileops, responsive, packages, compile, cpu, me
 5. Publish Prometheus gauges; delete CioVMs / cloud-init Secrets.
 6. On Run delete: remove metric series (finalizer `canario.rhpds.com/metrics`).
 
-Phases: `Pending` → `Running` → `Succeeded` \| `Failed`.
+Phases: `Pending` → `Running` → `Succeeded` \| `Failed` \| `Degraded`.
 
 ## Status (high level)
 
@@ -39,7 +44,7 @@ Phases: `Pending` → `Running` → `Succeeded` \| `Failed`.
 |-------|---------|
 | `phase` / `message` | Run outcome |
 | `suiteStatus` | Aggregate suite |
-| `workers[]` | Per-worker CioVM, node, disk + guest timings, optional `scores` |
+| `workers[]` | Per-worker CioVM, node, disk + guest timings, `suiteStartedTime`, optional `scores` |
 | `scores` | Worst-worker rollup: `total`, `verdict`, `scoringRef` |
 | `startTime` / `completionTime` | Wall clock |
 

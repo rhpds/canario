@@ -26,6 +26,59 @@ import (
 func i64(v int64) *int64 { return &v }
 func i32(v int32) *int32 { return &v }
 
+func TestFailedWorkerWithoutDataGetsWorstBands(t *testing.T) {
+	policy := &canariov1alpha1.CanarioScore{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: canariov1alpha1.CanarioScoreSpec{
+			Modules: canariov1alpha1.ScoreModules{
+				Packages: &canariov1alpha1.PackagesBands{
+					DnfInstallMs: []canariov1alpha1.UpperBoundBand{
+						{Max: i64(3500), Points: 0},
+						{Points: 3},
+					},
+				},
+				Network: &canariov1alpha1.NetworkBands{
+					FailedCheckPoints:    1,
+					DownloadFailedPoints: 2,
+				},
+			},
+		},
+	}
+	run := &canariov1alpha1.CanarioRun{
+		Status: canariov1alpha1.CanarioRunStatus{
+			Workers: []canariov1alpha1.WorkerResult{
+				{
+					NodeName: "ok",
+					Phase:    canariov1alpha1.PhaseSucceeded,
+					Guest:    &canariov1alpha1.GuestResult{DnfInstallMs: "3000"},
+				},
+				{
+					NodeName: "dead",
+					Phase:    canariov1alpha1.PhaseFailed,
+					Message:  "suite timeout",
+				},
+			},
+		},
+	}
+	rs := Apply(policy, run)
+	if rs == nil {
+		t.Fatal("expected scores")
+	}
+	if run.Status.Workers[0].Scores.Total != 0 {
+		t.Fatalf("ok worker total=%d want 0", run.Status.Workers[0].Scores.Total)
+	}
+	dead := run.Status.Workers[1].Scores
+	if dead == nil || dead.Packages != 3 {
+		t.Fatalf("dead packages=%v want 3", dead)
+	}
+	if dead.Network != 5 { // 1*3 + 2
+		t.Fatalf("dead network=%d want 5", dead.Network)
+	}
+	if rs.Total != dead.Total {
+		t.Fatalf("run total=%d want worst worker %d", rs.Total, dead.Total)
+	}
+}
+
 func TestApplyWorstWorker(t *testing.T) {
 	policy := &canariov1alpha1.CanarioScore{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},

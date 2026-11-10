@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -74,5 +76,26 @@ var _ = Describe("suite config resolution", func() {
 		Expect(cfg.NetworkMode).To(Equal(canariov1alpha1.NetworkOff))
 		Expect(cfg.DNSName).To(Equal("example.org"))
 		Expect(cfg.PingTarget).To(Equal(builtinPingTarget))
+	})
+
+	It("resolves worker suite timeout Run > operator > builtin", func() {
+		Expect(resolveSuiteConfig(&canariov1alpha1.CanarioRun{}, OperatorSuiteDefaults{}).WorkerSuiteTimeout).
+			To(Equal(builtinWorkerTimeout))
+
+		Expect(resolveSuiteConfig(&canariov1alpha1.CanarioRun{}, OperatorSuiteDefaults{
+			WorkerSuiteTimeout: 45 * time.Minute,
+		}).WorkerSuiteTimeout).To(Equal(45 * time.Minute))
+
+		run := &canariov1alpha1.CanarioRun{
+			Spec: canariov1alpha1.CanarioRunSpec{
+				Suite: &canariov1alpha1.SuiteSpec{Timeout: "10m"},
+			},
+		}
+		Expect(resolveSuiteConfig(run, OperatorSuiteDefaults{
+			WorkerSuiteTimeout: 45 * time.Minute,
+		}).WorkerSuiteTimeout).To(Equal(10 * time.Minute))
+
+		Expect(resolveWorkerSuiteTimeout("bogus", 0)).To(Equal(builtinWorkerTimeout))
+		Expect(resolveWorkerSuiteTimeout("0s", 15*time.Minute)).To(Equal(15 * time.Minute))
 	})
 })
