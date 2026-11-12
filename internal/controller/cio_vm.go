@@ -395,7 +395,10 @@ func (r *CanarioRunReconciler) createCioVM(ctx context.Context, run *canariov1al
 		},
 	})
 
+	// None: CioVMs use RWO disks (incl. hostpath-csi) and are node-pinned; inheriting
+	// the cluster LiveMigrate default fires VMCannotBeEvicted.
 	vmiSpec := map[string]interface{}{
+		"evictionStrategy": "None",
 		"domain": map[string]interface{}{
 			"devices": map[string]interface{}{
 				"disks": diskDevices,
